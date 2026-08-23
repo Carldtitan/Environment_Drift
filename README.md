@@ -20,9 +20,17 @@ The cost is not an abstract "environment issue." It is the last ten minutes of a
 
 **Claude-Mem is useful.** It remembers what an agent did and why. Memory can point to a likely missing step. It cannot prove that a clean checkout now works.
 
-## The answer
+## What IWOMC is
 
-**IWOMC Rescue finds the setup that made a revision work, gives the matching broken checkout an approved project-local repair, and proves the result with the project's own command.**
+IWOMC is a command-line package for handing a working project to another developer or coding agent.
+
+On the working checkout, it reads the project's manifest, lockfiles, runtime pins, and project-local installed packages. It compares what the repository says it needs with what is actually installed. It saves the difference as a signed contract tied to one Git revision.
+
+On the broken checkout, the teammate runs `iwomc rescue`. IWOMC checks that the contract matches the same revision, applies only the approved project-local setup, then runs the project's own test, build, or smoke command.
+
+If that command passes, IWOMC reports `working`. If it fails, IWOMC reports the real blocker. It does not pretend that an install succeeded when the app still does not run.
+
+IWOMC does not copy an entire computer. It does not replace Docker. It fixes the project-level gap that Git, manifests, and Dockerfiles missed, then offers a reviewable repository change to prevent the next failure.
 
 ## Install
 
