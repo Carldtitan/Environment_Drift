@@ -1,14 +1,14 @@
 # IWOMC Rescue
 
-**Published on npm:** [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
+> Your teammate clones the same code. It fails. It worked on your computer.
 
-IWOMC Rescue makes a teammate's broken checkout run from a verified environment contract.
+Coding agents can install a package, use a runtime version, or create project-local setup that never reaches Git. The code gets pushed. The setup that made it work does not.
 
-It solves one failure:
-
-> The code was pushed. The setup that made it work was not.
+**IWOMC Rescue finds that missing setup, gets the matching checkout running, and proves it with the project's own command.**
 
 ## Install
+
+**Published on npm:** [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
 
 ```bash
 npm install -g iwomc
