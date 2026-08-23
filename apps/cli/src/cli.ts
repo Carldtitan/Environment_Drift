@@ -5,6 +5,13 @@ import { buildCompanion } from "./wiring.js";
 import { renderStatus, renderCapture, renderDoctor, renderRescue, renderVerify, renderPromote } from "./views.js";
 import { bullet, heading, line, style, wrapText } from "./render.js";
 import { AGENT_GUIDE, COMMAND_SPECS, renderCommandHelp, renderRootHelp } from "./agent-docs.js";
+import {
+  hydrateContractForCheckout,
+  publishCapture,
+  publishRescue,
+  publishVerifiedContract,
+  syncProjectBinding,
+} from "./team-sync.js";
 
 /**
  * Exit codes are part of the CLI contract, so an agent or a CI job can branch
@@ -88,7 +95,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
   }
 
   if (args.command === "--version" || args.command === "-v" || args.command === "version") {
-    io.out("iwomc 0.1.0");
+    io.out("iwomc 0.1.3");
     return EXIT.ok;
   }
 
@@ -114,6 +121,11 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       },
       io,
     );
+  }
+
+  if (args.command === "host") {
+    const { runHostedControlPlane } = await import("./host.js");
+    return await runHostedControlPlane(defaultIo);
   }
 
   let companion: Companion | null = null;
@@ -172,18 +184,20 @@ async function dispatch(
           ? { envAllowlist: (flagString(args.flags, "env") as string).split(",").map((name) => name.trim()) }
           : {}),
       });
+      const team = await syncProjectBinding(companion, result.binding);
+      const syncedResult = { ...result, binding: team.binding };
       if (json) {
-        io.out(JSON.stringify(result, null, 2));
+        io.out(JSON.stringify({ ...syncedResult, teamSynced: team.synced }, null, 2));
         return EXIT.ok;
       }
       io.out(heading("Project bound"));
       io.out(
-        line("ready", result.binding.projectName, `project ${result.binding.projectId.slice(0, 8)} in this workspace`),
+        line("ready", syncedResult.binding.projectName, `project ${syncedResult.binding.projectId.slice(0, 8)} in this workspace`),
       );
-      io.out(bullet(`Subdirectory: ${result.binding.subdirectory}`));
-      io.out(bullet(`Ecosystem support: ${result.support.level} - ${result.support.reason}`));
-      if (result.proof) {
-        io.out(bullet(`Proof command: ${formatCommand(result.proof.argv)}`));
+      io.out(bullet(`Subdirectory: ${syncedResult.binding.subdirectory}`));
+      io.out(bullet(`Ecosystem support: ${syncedResult.support.level} - ${syncedResult.support.reason}`));
+      if (syncedResult.proof) {
+        io.out(bullet(`Proof command: ${formatCommand(syncedResult.proof.argv)}`));
       } else {
         io.out("");
         io.out(line("attention", "No proof command configured"));
@@ -193,6 +207,7 @@ async function dispatch(
           ),
         );
       }
+      if (team.synced) io.out(bullet("Shared project binding: connected"));
       io.out("");
       io.out(style.dim("Next: run `iwomc capture` on a checkout where the project works."));
       return EXIT.ok;
@@ -219,27 +234,31 @@ async function dispatch(
         ...(flagString(args.flags, "proof") ? { proofCommand: flagString(args.flags, "proof") as string } : {}),
         allowSourceUpload: flagBool(args.flags, "allow-source-upload"),
       });
+      const shared = await publishCapture(companion, result);
+      const output = shared.contract ? { ...result, contract: shared.contract } : result;
       if (json) {
         io.out(
           JSON.stringify(
             {
-              receipt: result.receipt,
-              contract: result.contract,
-              support: result.support,
-              supportReason: result.supportReason,
-              drift: result.drift,
-              coverage: result.coverage,
-              secretNames: result.secretNames,
-              blockers: result.blockers,
+              receipt: output.receipt,
+              contract: output.contract,
+              support: output.support,
+              supportReason: output.supportReason,
+              drift: output.drift,
+              coverage: output.coverage,
+              secretNames: output.secretNames,
+              blockers: output.blockers,
+              teamPublished: shared.published,
             },
             null,
             2,
           ),
         );
       } else {
-        io.out(renderCapture(result));
+        io.out(renderCapture(output));
+        if (shared.published) io.out(line("ready", "Shared with the team", "The exact revision contract is ready for teammates."));
       }
-      return result.contract ? EXIT.ok : EXIT.unsupported;
+      return output.contract ? EXIT.ok : EXIT.unsupported;
     }
 
     case "verify": {
@@ -254,13 +273,21 @@ async function dispatch(
               onEvent: (event) => io.out(`  ${style.dim(event.phase.padEnd(18))} ${event.message}`),
             }),
       });
-      if (json) io.out(JSON.stringify(result, null, 2));
-      else io.out(renderVerify(result));
-      if (result.blocker) return result.attestation ? EXIT.failed : EXIT.blocked;
+      const shared = result.attestation?.state === "passed"
+        ? await publishVerifiedContract(companion, result.contract)
+        : { published: false, contract: result.contract };
+      const output = shared.contract ? { ...result, contract: shared.contract } : result;
+      if (json) io.out(JSON.stringify({ ...output, teamPublished: shared.published }, null, 2));
+      else {
+        io.out(renderVerify(output));
+        if (shared.published) io.out(line("ready", "Verified contract shared", "Teammates can now rescue this exact revision."));
+      }
+      if (output.blocker) return output.attestation ? EXIT.failed : EXIT.blocked;
       return EXIT.ok;
     }
 
     case "rescue": {
+      await hydrateContractForCheckout(companion, dir);
       const result = await companion.rescue(dir, {
         ...(flagString(args.flags, "contract") ? { contractId: flagString(args.flags, "contract") as string } : {}),
         approve: flagBool(args.flags, "approve"),
@@ -270,6 +297,7 @@ async function dispatch(
         return emitBlocker(result.blocker, json, io);
       }
       const full = result as Awaited<ReturnType<Companion["rescue"]>> & { state: string };
+      if ("outcome" in full) await publishRescue(companion, full.outcome);
       if (json) io.out(JSON.stringify(full, null, 2));
       else io.out(renderRescue(full as never));
       switch (full.state) {

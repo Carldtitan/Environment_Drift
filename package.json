@@ -11,6 +11,9 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "build:console": "pnpm --filter @iwomc/console run build",
+    "build:hosted": "pnpm run build && pnpm run build:console",
+    "package:cli": "node scripts/package-cli.mjs",
+    "pack:cli": "pnpm run build:hosted && pnpm run package:cli && npm pack ./release/iwomc",
     "clean": "tsc -b tsconfig.build.json --clean",
     "typecheck": "tsc -b tsconfig.build.json && tsc --noEmit -p tsconfig.json && pnpm --filter @iwomc/console run typecheck",
     "test": "pnpm run build && vitest run",
@@ -22,6 +25,7 @@
     "verify": "pnpm run build && pnpm run build:console && pnpm run trace && pnpm run honesty && pnpm run secret-scan && pnpm run capability-matrix:check && vitest run",
     "iwomc": "node apps/cli/dist/bin.js",
     "serve": "node apps/cli/dist/bin.js serve",
+    "start": "node apps/cli/dist/bin.js host",
     "test:browser": "vitest run --project browser",
     "honesty": "node scripts/check-honesty.ts",
     "capability-matrix:check": "node scripts/capability-matrix.ts --check"

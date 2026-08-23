@@ -7,3 +7,4 @@ apps/console/dist/
 .env.local
 coverage/
 artifacts/
+release/

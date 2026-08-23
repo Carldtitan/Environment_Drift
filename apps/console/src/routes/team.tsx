@@ -54,9 +54,9 @@ export function TeamRoute() {
   return (
     <div className="stack">
       <Notice tone="ready">
-        GitHub carries the project source. IWOMC carries the verified setup: what was installed, which declaration drifted,
-        the proof command, and each rescue result. A GitHub App is optional for a future hosted/private-source verifier;
-        it is not required to pair a teammate on this network.
+        GitHub signs people into this workspace and carries the source code. IWOMC carries the verified setup: what was
+        installed, which declaration drifted, the proof command, and each rescue result. A teammate joins their device
+        with the one-use command below; its private signing key stays on that device.
       </Notice>
       <Card
         title="Invite a teammate"

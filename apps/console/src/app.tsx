@@ -77,7 +77,10 @@ export function App() {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setSession({ authenticated: false });
+        setSession({
+          authenticated: false,
+          ...(error instanceof ApiError && error.loginUrl ? { loginUrl: error.loginUrl } : {}),
+        });
         setSessionError(
           error instanceof ApiError
             ? error.message
@@ -142,7 +145,7 @@ export function App() {
   }
 
   if (!session.authenticated) {
-    return <SignedOut detail={sessionError ?? session.detail ?? null} />;
+    return <SignedOut detail={sessionError ?? session.detail ?? null} loginUrl={session.loginUrl ?? null} />;
   }
 
   return (
@@ -291,7 +294,7 @@ function scopeLine(overview: Overview | null): string {
   return "One project, one revision, one action.";
 }
 
-function SignedOut({ detail }: { detail: string | null }) {
+function SignedOut({ detail, loginUrl }: { detail: string | null; loginUrl: string | null }) {
   return (
     <main className="canvas" id="main">
       <div className="canvas__inner" style={{ maxWidth: 620, paddingTop: 40 }}>
@@ -305,15 +308,16 @@ function SignedOut({ detail }: { detail: string | null }) {
             {detail ??
               "The console needs a session. Every action it offers is also available from the iwomc command line."}
           </p>
-          <ol style={{ marginTop: 16, paddingLeft: 20, color: "var(--ink-600)" }}>
-            <li style={{ marginBottom: 6 }}>
-              Run <code>iwomc serve</code> on the machine that holds your checkout.
-            </li>
-            <li style={{ marginBottom: 6 }}>Open the link it prints. The link carries a one-time session token.</li>
-            <li>
-              Once a GitHub App is configured, <code>iwomc login</code> signs you in with your GitHub identity instead.
-            </li>
-          </ol>
+          {loginUrl ? (
+            <a className="btn btn--primary" href={loginUrl} style={{ display: "inline-flex", marginTop: 18 }}>
+              Sign in with GitHub
+            </a>
+          ) : (
+            <ol style={{ marginTop: 16, paddingLeft: 20, color: "var(--ink-600)" }}>
+              <li>Run <code>iwomc serve</code> on the machine that holds your checkout.</li>
+              <li style={{ marginTop: 6 }}>Open the one-time link it prints.</li>
+            </ol>
+          )}
         </div>
       </div>
     </main>

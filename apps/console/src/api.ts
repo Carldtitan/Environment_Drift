@@ -42,12 +42,19 @@ export function clearSessionToken(): void {
 export class ApiError extends Error {
   readonly status: number;
   readonly blocker: { code: string; message: string; nextAction: string } | null;
+  readonly loginUrl: string | null;
 
-  constructor(status: number, message: string, blocker: ApiError["blocker"] = null) {
+  constructor(
+    status: number,
+    message: string,
+    blocker: ApiError["blocker"] = null,
+    loginUrl: string | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.blocker = blocker;
+    this.loginUrl = loginUrl;
   }
 }
 
@@ -72,11 +79,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
-    const payload = body as { error?: string; blocker?: ApiError["blocker"] } | null;
+    const payload = body as { error?: string; blocker?: ApiError["blocker"]; loginUrl?: string | null } | null;
     throw new ApiError(
       response.status,
       payload?.error ?? `The control plane returned HTTP ${response.status}.`,
       payload?.blocker ?? null,
+      payload?.loginUrl ?? null,
     );
   }
   return body as T;
@@ -99,6 +107,7 @@ export type ContractState =
 export interface Session {
   authenticated: boolean;
   detail?: string;
+  loginUrl?: string | null;
   personId?: string;
   person?: { id: string; displayName: string } | null;
   workspaceId?: string;

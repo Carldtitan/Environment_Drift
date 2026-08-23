@@ -1,7 +1,18 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, resolve as resolvePath } from "node:path";
-import { BlockedError, WORKSPACE_ROLES, type Invitation, type WorkspaceRole } from "@iwomc/contracts";
+import {
+  BlockedError,
+  WORKSPACE_ROLES,
+  randomId,
+  signPayload,
+  verifyPayload,
+  type Invitation,
+  type KeyPair,
+  type Signature,
+  type WorkspaceRole,
+} from "@iwomc/contracts";
 import { ControlPlaneService, ForbiddenError, type Principal } from "./service.js";
 import type { ControlPlaneStore } from "./store.js";
 
@@ -30,7 +41,34 @@ export interface ServerOptions {
   readonly local?: LocalContext | null;
   /** Explicit externally reachable origin for invitation commands. */
   readonly publicOrigin?: string | null;
+  /** Optional browser sign-in for a deployed control plane. */
+  readonly githubOAuth?: GitHubOAuthOptions | null;
   readonly version?: string;
+}
+
+/**
+ * GitHub OAuth is used only to establish a dashboard identity. The access
+ * token is exchanged for the immutable GitHub user id, then discarded; it is
+ * never used as a repository credential or stored in IWOMC.
+ */
+export interface GitHubOAuthOptions {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly callbackUrl: string;
+  readonly signingKey: KeyPair;
+  readonly fetchImpl?: typeof fetch;
+}
+
+interface OAuthStatePayload {
+  readonly purpose: "github_oauth";
+  readonly nonce: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+interface OAuthStateEnvelope {
+  readonly payload: OAuthStatePayload;
+  readonly signature: Signature;
 }
 
 interface RouteContext {
@@ -63,6 +101,16 @@ export function createControlPlaneServer(options: ServerOptions): Server {
 
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/github") {
+      await beginGitHubOAuth(res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/github/callback") {
+      await completeGitHubOAuth(url, req, res);
       return;
     }
 
@@ -218,8 +266,10 @@ export function createControlPlaneServer(options: ServerOptions): Server {
       if (!person) {
         sendJson(res, 401, {
           authenticated: false,
-          detail:
-            "Open the Rescue Console with the one-time link printed by `iwomc serve`.",
+          detail: options.githubOAuth
+            ? "Sign in with GitHub to open or create your IWOMC workspace."
+            : "Open the Rescue Console with the one-time link printed by `iwomc serve`.",
+          loginUrl: options.githubOAuth ? "/auth/github" : null,
         });
         return;
       }
@@ -411,6 +461,111 @@ export function createControlPlaneServer(options: ServerOptions): Server {
     sendJson(res, 404, { error: `No route for ${method} ${path}` });
   }
 
+  async function beginGitHubOAuth(res: ServerResponse): Promise<void> {
+    const oauth = options.githubOAuth;
+    if (!oauth) {
+      sendText(res, 503, "GitHub sign-in is not configured on this control plane.");
+      return;
+    }
+    const now = new Date();
+    const payload: OAuthStatePayload = {
+      purpose: "github_oauth",
+      nonce: randomId(32),
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+    };
+    const signature = signPayload(payload, oauth.signingKey, "service", payload.issuedAt);
+    const state = Buffer.from(JSON.stringify({ payload, signature } satisfies OAuthStateEnvelope), "utf8").toString("base64url");
+    const verifier = randomId(48);
+    const challenge = createHash("sha256").update(verifier, "utf8").digest("base64url");
+    // The verifier is a one-use random value bound to the signed state. GitHub
+    // receives only its SHA-256 challenge. It is not a credential for IWOMC.
+    const protectedState = Buffer.from(JSON.stringify({ state, verifier }), "utf8").toString("base64url");
+    const authorize = new URL("https://github.com/login/oauth/authorize");
+    authorize.searchParams.set("client_id", oauth.clientId);
+    authorize.searchParams.set("redirect_uri", oauth.callbackUrl);
+    authorize.searchParams.set("scope", "read:user");
+    authorize.searchParams.set("state", protectedState);
+    authorize.searchParams.set("code_challenge", challenge);
+    authorize.searchParams.set("code_challenge_method", "S256");
+    sendRedirect(res, authorize.toString());
+  }
+
+  async function completeGitHubOAuth(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const oauth = options.githubOAuth;
+    if (!oauth) {
+      sendText(res, 503, "GitHub sign-in is not configured on this control plane.");
+      return;
+    }
+    if (url.searchParams.get("error")) {
+      sendText(res, 401, `GitHub sign-in was not completed: ${url.searchParams.get("error_description") ?? url.searchParams.get("error")}.`);
+      return;
+    }
+    const code = url.searchParams.get("code");
+    const protectedState = url.searchParams.get("state");
+    if (!code || !protectedState) {
+      sendText(res, 400, "GitHub did not return the required authorization response.");
+      return;
+    }
+
+    const state = decodeOAuthState(protectedState, oauth.signingKey);
+    if (!state) {
+      sendText(res, 400, "The GitHub sign-in state is invalid or expired. Start again from the Rescue Console.");
+      return;
+    }
+
+    const fetchImpl = oauth.fetchImpl ?? fetch;
+    const tokenResponse = await fetchImpl("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: oauth.clientId,
+        client_secret: oauth.clientSecret,
+        code,
+        redirect_uri: oauth.callbackUrl,
+        code_verifier: state.verifier,
+      }),
+    });
+    const token = (await tokenResponse.json()) as { access_token?: string; error_description?: string };
+    if (!tokenResponse.ok || !token.access_token) {
+      sendText(res, 401, `GitHub could not complete sign-in${token.error_description ? `: ${token.error_description}` : "."}`);
+      return;
+    }
+
+    const profileResponse = await fetchImpl("https://api.github.com/user", {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token.access_token}`,
+      },
+    });
+    if (!profileResponse.ok) {
+      sendText(res, 401, "GitHub did not return a verified user identity.");
+      return;
+    }
+    const profile = (await profileResponse.json()) as { id?: number; login?: string; avatar_url?: string };
+    if (!profile.id || !profile.login) {
+      sendText(res, 401, "GitHub returned an incomplete user identity.");
+      return;
+    }
+
+    const personId = `github:${profile.id}`;
+    store.upsertPerson({
+      id: personId,
+      displayName: profile.login,
+      ...(profile.avatar_url ? { avatarUrl: profile.avatar_url } : {}),
+    });
+    const workspace = store.listWorkspacesForPerson(personId)[0] ?? (() => {
+      const created = service.createWorkspace({
+        name: `${profile.login} workspace`,
+        person: { id: personId, displayName: profile.login, ...(profile.avatar_url ? { avatarUrl: profile.avatar_url } : {}) },
+      });
+      return store.getWorkspace(created.workspaceId)!;
+    })();
+    const session = service.createSession({ personId, workspaceId: workspace.id });
+    setSessionCookie(res, session.token, req, configuredPublicOrigin);
+    sendRedirect(res, "/");
+  }
+
   async function serveConsole(pathname: string, res: ServerResponse): Promise<void> {
     if (consoleDir === null) {
       res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
@@ -476,6 +631,56 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, { ...JSON_HEADERS, "content-length": Buffer.byteLength(text) });
   res.end(text);
+}
+
+function sendText(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+  res.end(body);
+}
+
+function sendRedirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, { location, "cache-control": "no-store" });
+  res.end();
+}
+
+function decodeOAuthState(raw: string, signingKey: KeyPair): { verifier: string } | null {
+  try {
+    const protectedState = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as {
+      state?: string;
+      verifier?: string;
+    };
+    if (typeof protectedState.state !== "string" || typeof protectedState.verifier !== "string") return null;
+    if (protectedState.verifier.length < 43 || protectedState.verifier.length > 128) return null;
+    const envelope = JSON.parse(Buffer.from(protectedState.state, "base64url").toString("utf8")) as OAuthStateEnvelope;
+    if (!envelope?.payload || !envelope.signature) return null;
+    if (envelope.signature.signer !== "service" || envelope.signature.publicKey !== signingKey.publicKey) return null;
+    if (!verifyPayload(envelope.payload, envelope.signature)) return null;
+    if (envelope.payload.purpose !== "github_oauth" || envelope.payload.nonce.length < 32) return null;
+    const issuedAt = Date.parse(envelope.payload.issuedAt);
+    const expiresAt = Date.parse(envelope.payload.expiresAt);
+    if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) return null;
+    if (expiresAt <= Date.now() || expiresAt - issuedAt > 10 * 60_000) return null;
+    return { verifier: protectedState.verifier };
+  } catch {
+    return null;
+  }
+}
+
+function setSessionCookie(
+  res: ServerResponse,
+  token: string,
+  req: IncomingMessage,
+  configuredPublicOrigin: string | null,
+): void {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const https =
+    configuredPublicOrigin?.startsWith("https://") ||
+    forwardedProto === "https" ||
+    (Array.isArray(forwardedProto) && forwardedProto.includes("https"));
+  res.setHeader(
+    "set-cookie",
+    `iwomc_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${12 * 60 * 60}${https ? "; Secure" : ""}`,
+  );
 }
 
 async function readJsonBody(req: IncomingMessage, limitBytes = 4 * 1024 * 1024): Promise<unknown> {

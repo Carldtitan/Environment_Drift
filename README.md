@@ -1,213 +1,128 @@
 # IWOMC Rescue
 
-**A teammate pulls agent-written code and it does not run. IWOMC applies an
-approved environment contract captured from a checkout where it *did* run, then
-proves the result with the project's own command.**
+> A project works on one developer's computer and fails on another because the code was shared, but part of the setup was not.
 
+**IWOMC Rescue captures a verified setup contract from a working checkout, rescues a matching broken checkout, and proves the result with the project's own command.**
+
+## The problem
+
+Coding agents change more than source code. They install packages, use runtime versions, and create project-local state. Some of that state is not declared in the repository.
+
+That creates the most painful kind of handoff:
+
+1. Developer A gets the app working.
+2. Developer A pushes the code.
+3. Developer B clones the same revision.
+4. The app fails on B's machine.
+
+Git shared the code. It did not prove that the environment was complete.
+
+## What IWOMC does
+
+```text
+Working checkout                 Broken checkout
+---------------                  ----------------
+capture real setup     ->        rescue project-local setup
+create signed contract ->        run the same proof command
+record drift           ->        report working only if it passes
 ```
-iwomc capture    # on a checkout that works
-iwomc rescue     # on a checkout that does not
-```
-
-Docker runs the setup a developer wrote down. IWOMC finds the setup an agent
-actually used and the repository forgot to write down, and proves a repair.
-
----
-
-## The 60-second version
 
 ```bash
-# On the machine where the project works
-cd path/to/working/checkout
-iwomc init --proof "npm test"     # what "working" means for this project
-iwomc capture                     # evidence + a signed contract for this revision
-iwomc verify                      # apply it in a fresh directory and prove it
+# Developer A: this checkout works.
+iwomc init --proof "npm test"
+iwomc capture
 
-# On the machine where it does not
-cd path/to/broken/checkout
-iwomc init
-iwomc rescue                      # -> working | blocked | failed | unsupported | inconclusive
+# Developer B: same Git revision, but it does not run.
+iwomc init --proof "npm test"
+iwomc rescue --approve
 ```
 
-`rescue` prints `working` only when the proof command passes. Installing is not
-success.
+`working` means the proof command passed. A successful install alone is not a success state.
 
----
+## Why existing tools do not close this gap
 
-## Install
+| Tool | Valuable for | What it does not prove |
+| --- | --- | --- |
+| Git | Sharing source code | The code runs in a clean checkout |
+| Docker | Reproducing a complete written recipe | An agent used a setup step that was never added to the Dockerfile |
+| Greptile | Understanding and reviewing code | The exact environment that ran on another developer's machine |
+| Claude-Mem | Remembering agent activity and decisions | A deterministic, verified environment contract |
 
-Requires **Node 22.5 or newer** (for `node:sqlite`) and **Git** on `PATH`.
+Docker is still good engineering. IWOMC is not a Docker replacement. Docker runs the recipe that exists. IWOMC detects project-local setup that actually worked but the repository did not declare, then gives the team a path to correct the repository.
 
-```bash
-pnpm install
-pnpm run build          # the CLI, Companion, adapters, control plane
-pnpm run build:console  # the hosted Rescue Console
-```
+## Claude-Mem integration
 
-Then either run it in place:
+Claude-Mem is used as the memory layer, not as the source of truth.
 
-```bash
-node apps/cli/dist/bin.js status
-```
+IWOMC writes **redacted lifecycle observations** to the documented local Claude-Mem worker API for:
 
-or put it on your `PATH`:
+- capture
+- declared versus observed drift
+- verification
+- rescue result
+- promoted repository repair
 
-```bash
-pnpm --dir apps/cli link --global   # provides `iwomc`
-```
+This gives a future agent relevant context such as: "a prior rescue found an undeclared npm package for this revision." IWOMC still verifies the machine itself and runs the proof command. It never treats memory as proof, and it never sends secret values to Claude-Mem.
 
-Nothing else is required. There is no Docker image, no daemon to install, and no
-account to create.
+## What is supported now
 
----
-
-## What it actually does
-
-### `iwomc capture` — on a checkout that works
-
-Reads the project's declared state (manifests, lockfiles, runtime pins) and
-inventories what is actually installed **project-locally**, without running a
-single package-manager command. Anything installed here that the repository
-does not declare, and that no declared dependency requires, is recorded as
-observed evidence.
-
-It produces:
-
-- a **receipt** — immutable evidence bound to one Git revision, with every item
-  labelled `observed`, `declared`, `derived`, or `unavailable`;
-- a **contract** — a signed, content-addressed materialization plan made of
-  typed steps, plus the proof command;
-- a **coverage report** — what capture could *not* see, so absence is never
-  mistaken for evidence of absence.
-
-### `iwomc verify` — prove the contract from nothing
-
-Clones the repository into a temporary directory, checks out the exact revision,
-applies the contract, and runs the proof command there. A directory that has
-never had a `node_modules`, a `.venv`, or a `.env`.
-
-- Passing locally → the contract becomes **locally checked**.
-- Passing in a disposable Modal sandbox → **clean verified**.
-- Nothing else earns either label.
-
-### `iwomc rescue` — on a checkout that does not work
-
-1. Confirms this checkout is the registered project, at the contract's exact
-   revision, on a target platform the contract names.
-2. Verifies the contract's signature and content digest. A modified contract
-   stops everything and writes a security audit event.
-3. Preflights disk space, runtimes, system tools, and **secret names**.
-4. Applies typed steps into project-local state only, journalling each one.
-5. Runs the proof command.
-
-It returns exactly one of `working`, `blocked`, `failed`, `unsupported`, or
-`inconclusive` — with a machine-readable blocker code and one concrete next
-action.
-
-### `iwomc promote` — put it back in the repository
-
-A rescue makes *this* checkout work. Promote turns what it needed into an
-ordinary reviewable file diff, so the *next* developer does not need a rescue at
-all. It writes nothing without `--apply`.
-
----
-
-## Guarantees
-
-| Guarantee | How it is enforced |
+| Capability | Status |
 | --- | --- |
-| `working` requires a passing proof command | Only `runProof` can produce it (`packages/companion/src/proof.ts`) |
-| Rescue never edits a tracked file | Writes are confined to `.iwomc/`; tracked-file digests are compared before and after; `npm install --no-save` for overlays |
-| No secret value ever travels | Contracts carry names and optional vault references; every outbound payload passes a fail-closed redactor |
-| No shell, ever | Commands are argv arrays; the tokenizer refuses shell operators; `shell: true` appears nowhere |
-| Support levels are truthful | An ecosystem is `native` only when an adapter implements the whole loop *and* has a conformance test; the capability matrix is generated from that metadata |
-| An integration is `connected` only after a live check | Configuration presence never sets a status |
+| npm projects | Native capture, rescue, and verification |
+| pip projects | Native capture, rescue, and verification |
+| uv projects | Native capture, rescue, and verification |
+| Fresh local verification | Clones the exact revision into a new directory and runs the proof command |
+| Modal verification | Optional clean remote verification after explicit source-upload approval |
+| Team console | Hosted dashboard for contracts, drift, rescue runs, device invitations, and audit events |
+| Other package managers | Recognised and reported honestly. They are not advertised as native rescue support. |
 
----
+## Safety rules
 
-## Surfaces
+- Rescue writes only project-local state such as `node_modules`, `.venv`, and `.iwomc`.
+- Rescue does not edit tracked files.
+- Rescue does not install global packages or change the machine's PATH.
+- Secret values never enter a contract, receipt, dashboard upload, or Claude-Mem observation.
+- If a secret is required, IWOMC reports its name and stops.
+- `iwomc promote` creates a reviewable repository diff so the next developer does not need a rescue.
 
-### Command line
+## Run from source
 
-`init` · `status` · `capture` · `verify` · `rescue` · `promote` · `approve` ·
-`doctor` · `login` · `join` · `serve` · `mcp` · `agent-docs`
-
-Every command takes `--json` and returns a structured result. Exit codes are
-part of the contract: `0` ok, `1` failed, `2` blocked, `3` unsupported, `4`
-inconclusive, `64` usage.
-
-### MCP server (for coding agents)
-
-```bash
-iwomc mcp        # JSON-RPC 2.0 over stdio
-```
-
-Tools: `environment_status`, `diagnose_environment`, `capture_environment`,
-`verify_contract`, `rescue_environment`, `promote_repair`. Mutating tools refuse
-to run without `confirm: true`. The server publishes its own versioned workflow
-documentation as an MCP resource, so an agent can discover the flow without a
-hand-written prompt.
-
-### Rescue Console (hosted)
+Requires Node 22.5+ and Git.
 
 ```bash
-iwomc serve
+git clone https://github.com/Carldtitan/Environment_Drift.git
+cd Environment_Drift
+pnpm install
+pnpm run build
+node apps/cli/dist/bin.js --help
 ```
 
-Starts the control plane and the console, enrolls this device, and prints a link
-carrying a one-time session token. The browser talks only to the HTTP API: a
-console action becomes a signed, expiring job addressed to a device **by id** —
-the browser never sends a filesystem path and never speaks MCP.
+The public `iwomc` npm release is packaged, but it is **not published yet**. The current package registry authentication is unresolved, so this README does not pretend otherwise.
 
----
+## Judge demo
 
-## Ecosystem support
+Show one real failure and one real proof:
 
-Native today: **npm**, **pip**, **uv** — detection, declared state, inventory,
-project-local materialization, and verification, each with a conformance test.
+1. A working npm checkout has a direct package installed in `node_modules` but absent from `package.json`.
+2. `iwomc capture` identifies the undeclared package and creates a signed contract.
+3. A clean clone fails with the real missing-module error.
+4. `iwomc rescue --approve` applies the project-local repair and runs the app's proof command.
+5. The proof passes. `git status` remains clean.
+6. `iwomc promote` shows the exact `package.json` diff that prevents the next failure.
 
-Recognised with a truthful support level: pnpm, Yarn, Bun, Poetry, Conda, Cargo,
-Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub, Mix, vcpkg, Conan,
-Homebrew, apt, Chocolatey, winget, asdf, mise, Volta, SDKMAN, nvm.
-
-Recognition is not support. See [docs/capability-matrix.md](docs/capability-matrix.md),
-which is generated from adapter metadata and cannot claim more than the code does.
-
----
+This is not a scripted product response. The CLI reads the checkout, performs the package action, and uses the project's own command as the proof.
 
 ## Documentation
 
-| Guide | For |
-| --- | --- |
-| [docs/agent-workflow.md](docs/agent-workflow.md) | Coding agents driving IWOMC |
-| [docs/project-author.md](docs/project-author.md) | Setting a project up so teammates can be rescued |
-| [docs/team-admin.md](docs/team-admin.md) | Workspaces, invitations, devices, revocation |
-| [docs/adapters.md](docs/adapters.md) | Writing an ecosystem adapter |
-| [docs/security.md](docs/security.md) | Trust boundaries, redaction, signatures, audit |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Every blocker code and what to do |
-| [docs/capability-matrix.md](docs/capability-matrix.md) | Generated ecosystem support |
-| [docs/traceability.md](docs/traceability.md) | Requirement → module → test |
-| [DESIGN.md](DESIGN.md) | The Rescue Console design system |
+- [Project author guide](docs/project-author.md)
+- [Team administration guide](docs/team-admin.md)
+- [Agent and MCP workflow](docs/agent-workflow.md)
+- [Support matrix](docs/capability-matrix.md)
+- [Security model](docs/security.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
----
+## Hosted console
 
-## Verify the build
+[Open IWOMC Rescue Console](https://iwomc-web-production.up.railway.app)
 
-```bash
-pnpm run verify
-```
-
-Builds everything, checks requirement traceability, scans the repository with
-the product's own redaction classifier, confirms the capability matrix matches
-the code, and runs the full test suite — including a real two-checkout
-capture-to-rescue flow and a real browser driving the console.
-
----
-
-## What is honestly unavailable here
-
-No GitHub App, Postgres, or object-store credentials are provisioned in this
-build. Each is implemented behind its interface with configuration validation
-and an explicit unavailable state, and each has tests. None is replaced by a
-mock that could read as connected. `iwomc doctor` names exactly which value is
-missing for each.
+The dashboard is useful after a device has joined a workspace and published a capture. It intentionally shows honest empty states before that happens.
