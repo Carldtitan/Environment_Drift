@@ -1,5 +1,7 @@
 # IWOMC Rescue
 
+**Live team dashboard:** [iwomc-web-production.up.railway.app](https://iwomc-web-production.up.railway.app/)
+
 ## The problem
 
 Your teammate clones the same commit you just pushed. The app fails before the demo. It worked on your computer ten minutes ago.
@@ -139,7 +141,7 @@ See the full [capability matrix](docs/capability-matrix.md).
 
 Code stays in Git. IWOMC shares the signed environment contract.
 
-1. The owner opens the [Rescue Console](https://iwomc-web-production.up.railway.app).
+1. The owner opens the Rescue Console above.
 2. A teammate joins with an invitation.
 3. The working device captures and verifies a contract.
 4. The teammate's device downloads the exact contract and runs rescue.
