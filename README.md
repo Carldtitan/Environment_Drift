@@ -106,19 +106,6 @@ iwomc --help
 
 Published package: [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
 
-## Judge demo
-
-Show one real failure and one real proof:
-
-1. A working npm checkout has a direct package installed in `node_modules` but absent from `package.json`.
-2. `iwomc capture` identifies the undeclared package and creates a signed contract.
-3. A clean clone fails with the real missing-module error.
-4. `iwomc rescue --approve` applies the project-local repair and runs the app's proof command.
-5. The proof passes. `git status` remains clean.
-6. `iwomc promote` shows the exact `package.json` diff that prevents the next failure.
-
-This is not a scripted product response. The CLI reads the checkout, performs the package action, and uses the project's own command as the proof.
-
 ## Documentation
 
 - [Project author guide](docs/project-author.md)
