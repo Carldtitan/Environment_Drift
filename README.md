@@ -97,7 +97,14 @@ pnpm run build
 node apps/cli/dist/bin.js --help
 ```
 
-The public `iwomc` npm release is packaged, but it is **not published yet**. The current package registry authentication is unresolved, so this README does not pretend otherwise.
+## Install from npm
+
+```bash
+npm install -g iwomc
+iwomc --help
+```
+
+Published package: [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
 
 ## Judge demo
 
