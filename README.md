@@ -22,15 +22,23 @@ The cost is not an abstract "environment issue." It is the last ten minutes of a
 
 ## What IWOMC is
 
-IWOMC is a command-line package for handing a working project to another developer or coding agent.
+IWOMC is a package that checks whether a repository describes the packages its app actually needs.
 
-On the working checkout, it reads the project's manifest, lockfiles, runtime pins, and project-local installed packages. It compares what the repository says it needs with what is actually installed. It saves the difference as a signed contract tied to one Git revision.
+Here is the exact failure it fixes:
 
-On the broken checkout, the teammate runs `iwomc rescue`. IWOMC checks that the contract matches the same revision, applies only the approved project-local setup, then runs the project's own test, build, or smoke command.
+1. A coding agent runs `npm install nanoid` on Alice's computer.
+2. The app imports `nanoid` and works because Alice has it in `node_modules`.
+3. The agent forgets to add `nanoid` to `package.json`.
+4. Bob clones the code and runs `npm install`.
+5. Bob's app fails because `npm install` only installs what `package.json` declares.
 
-If that command passes, IWOMC reports `working`. If it fails, IWOMC reports the real blocker. It does not pretend that an install succeeded when the app still does not run.
+On Alice's working checkout, IWOMC compares `package.json`, the lockfile, runtime pins, and `node_modules`. It sees that `nanoid` is installed but not declared. It saves that fact in a signed contract for Alice's exact Git commit.
 
-IWOMC does not copy an entire computer. It does not replace Docker. It fixes the project-level gap that Git, manifests, and Dockerfiles missed, then offers a reviewable repository change to prevent the next failure.
+On Bob's broken checkout, Bob runs `iwomc rescue`. IWOMC checks that Bob has the same commit, installs the approved missing package inside Bob's project, then runs the project's own test, build, or smoke command.
+
+If that command passes, IWOMC says `working`. It can then create a normal `package.json` change for review, so the missing package is fixed for everyone.
+
+It does not copy an entire computer. It does not install global tools. Today it handles this project-level package problem natively for npm, pip, and uv.
 
 ## Install
 
