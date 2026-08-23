@@ -1,10 +1,28 @@
 # IWOMC Rescue
 
-> Your teammate clones the same code. It fails. It worked on your computer.
+## The problem
 
-Coding agents can install a package, use a runtime version, or create project-local setup that never reaches Git. The code gets pushed. The setup that made it work does not.
+Your teammate clones the same commit you just pushed. The app fails before the demo. It worked on your computer ten minutes ago.
 
-**IWOMC Rescue finds that missing setup, gets the matching checkout running, and proves it with the project's own command.**
+The code is the same. The environment is not.
+
+This is getting worse with coding agents. An agent can install a package, use a runtime version, or create project-local setup while it works. The agent commits the code. The package, version, or setup step never enters the repository.
+
+Git shares source code. It does not prove that a fresh checkout can run it.
+
+The cost is not an abstract "environment issue." It is the last ten minutes of a hackathon, a blocked teammate, or a deployment that passed on the builder's machine and nowhere else.
+
+## Why the obvious tools are not enough
+
+**Docker is useful.** It solves this when the Dockerfile is complete and current. But Docker runs the recipe that was written down. It cannot discover that an agent used Node 22, installed a package locally, or relied on a tool that was never added to that recipe. It will faithfully reproduce an incomplete recipe.
+
+**Greptile is useful.** It helps teams understand and review code. A code review cannot prove which packages, versions, and local setup made that code run on another computer.
+
+**Claude-Mem is useful.** It remembers what an agent did and why. Memory can point to a likely missing step. It cannot prove that a clean checkout now works.
+
+## The answer
+
+**IWOMC Rescue finds the setup that made a revision work, gives the matching broken checkout an approved project-local repair, and proves the result with the project's own command.**
 
 ## Install
 
@@ -65,18 +83,6 @@ iwomc promote
 ```
 
 `promote` creates a reviewable manifest diff. The team can add the missing dependency or pin, so the next checkout works without rescue.
-
-## What makes it different
-
-| Tool | Job |
-| --- | --- |
-| Git | Shares code |
-| Docker | Runs the setup written in a Dockerfile |
-| Greptile | Reviews and understands code |
-| Claude-Mem | Remembers agent actions and context |
-| **IWOMC** | Proves the setup needed for this revision works in a clean checkout |
-
-Docker is useful. IWOMC does not replace it. Docker runs a complete recipe. IWOMC finds project-local setup that was used but not declared, then gives the team a verified path to fix it.
 
 ## Claude-Mem
 
