@@ -1,0 +1,42 @@
+{
+  "name": "iwomc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "IWOMC Rescue - make a teammate's broken checkout runnable from a verified environment contract.",
+  "packageManager": "pnpm@10.24.0",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "build:console": "pnpm --filter @iwomc/console run build",
+    "clean": "tsc -b tsconfig.build.json --clean",
+    "typecheck": "tsc -b tsconfig.build.json && tsc --noEmit -p tsconfig.json && pnpm --filter @iwomc/console run typecheck",
+    "test": "pnpm run build && vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm run build && vitest run --project e2e",
+    "trace": "node scripts/check-traceability.ts",
+    "secret-scan": "node scripts/secret-scan.ts",
+    "capability-matrix": "node scripts/capability-matrix.ts",
+    "verify": "pnpm run build && pnpm run build:console && pnpm run trace && pnpm run honesty && pnpm run secret-scan && pnpm run capability-matrix:check && vitest run",
+    "iwomc": "node apps/cli/dist/bin.js",
+    "serve": "node apps/cli/dist/bin.js serve",
+    "test:browser": "vitest run --project browser",
+    "honesty": "node scripts/check-honesty.ts",
+    "capability-matrix:check": "node scripts/capability-matrix.ts --check"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "@iwomc/contracts": "workspace:*",
+    "@iwomc/adapters": "workspace:*",
+    "@iwomc/companion": "workspace:*",
+    "@iwomc/integrations": "workspace:*",
+    "@iwomc/control-plane": "workspace:*",
+    "@iwomc/testkit": "workspace:*",
+    "@iwomc/cli": "workspace:*",
+    "playwright": "^1.56.0"
+  }
+}

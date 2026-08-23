@@ -1,0 +1,25 @@
+{
+  "name": "@iwomc/console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The IWOMC Rescue Console: a hosted operational UI for teams.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b tsconfig.json && vite build",
+    "typecheck": "tsc -b tsconfig.json",
+    "preview": "vite preview",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
+  }
+}

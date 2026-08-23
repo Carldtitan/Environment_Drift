@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.iwomc/
+apps/console/dist/
+.env
+.env.local
+coverage/
+artifacts/

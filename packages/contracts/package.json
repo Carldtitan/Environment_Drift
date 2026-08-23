@@ -1,0 +1,24 @@
+{
+  "name": "@iwomc/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical IWOMC schemas, state vocabulary, hashing, signatures, and redaction.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas/index.d.ts",
+      "default": "./dist/schemas/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  }
+}

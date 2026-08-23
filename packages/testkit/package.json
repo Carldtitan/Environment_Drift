@@ -1,0 +1,16 @@
+{
+  "name": "@iwomc/testkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Temporary-project factories and test doubles. Never imported by production code.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -b", "clean": "tsc -b --clean" },
+  "dependencies": {
+    "@iwomc/contracts": "workspace:*",
+    "@iwomc/companion": "workspace:*"
+  }
+}
