@@ -10,9 +10,10 @@ import type { CompanionStore } from "./store.js";
  * The private key is generated here and sealed into the local store. It is
  * never uploaded, never printed, and never placed in a contract.
  *
- * Before a person signs in, the device uses a `local:` owner identity. That
- * identity can create local receipts, local contracts, and run a local rescue,
- * but it cannot join a workspace or publish a team baseline.
+ * Before GitHub identity is configured, the device uses a `local:` owner
+ * identity. It can create or join a local control-plane workspace, publish a
+ * team baseline, and run rescue. It is labelled as local because its person id
+ * is device-generated rather than verified by GitHub.
  */
 
 export interface DeviceIdentity {

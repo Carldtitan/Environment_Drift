@@ -172,15 +172,26 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: "serve",
     summary: "Run the Rescue Console and its control plane on this machine.",
-    usage: "iwomc serve [--port <n>] [--host <addr>]",
+    usage: "iwomc serve [--port <n>] [--host <addr>] [--public-url <origin>]",
     effects: "Starts an HTTP server bound to localhost by default.",
     approval: "None.",
     flags: [
       { name: "--port", value: "<n>", description: "Port to listen on." },
       { name: "--host", value: "<addr>", description: "Interface to bind. Defaults to 127.0.0.1." },
+      { name: "--public-url", value: "<origin>", description: "Reachable HTTP(S) origin placed in teammate invitations; required with a wildcard host." },
     ],
     exitCodes: COMMON_EXITS,
     nextActions: ["Open the printed URL to see the console."],
+  },
+  {
+    name: "agent",
+    summary: "Keep this enrolled teammate device connected for signed dashboard jobs.",
+    usage: "iwomc agent [--url <control-plane>]",
+    effects: "Registers local bindings, polls outbound for signed jobs, and may run an approved capture, verification, rescue, or promotion preview on a pre-registered checkout.",
+    approval: "A dashboard job is already signed and workspace-scoped; local rescue still follows the contract's approval policy.",
+    flags: [{ name: "--url", value: "<control-plane>", description: "Override the control plane saved by iwomc join." }],
+    exitCodes: COMMON_EXITS,
+    nextActions: ["Run this in the product checkout on each teammate machine after iwomc join."],
   },
   {
     name: "mcp",

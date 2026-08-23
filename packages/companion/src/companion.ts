@@ -696,10 +696,10 @@ export class Companion {
       name: "Device identity",
       status: this.device.state === "revoked" ? "fail" : "ok",
       detail: `${this.device.displayName} (${this.device.state}), identity ${this.device.personId}${
-        isLocalOnlyIdentity(this.device.personId) ? " - local only, cannot join a workspace yet" : ""
+        isLocalOnlyIdentity(this.device.personId) ? " - local device identity; workspace sharing is available on a reachable control plane" : ""
       }.`,
       ...(isLocalOnlyIdentity(this.device.personId)
-        ? { nextAction: "Run `iwomc login` to sign in with GitHub and enable team features." }
+        ? { nextAction: "Run `iwomc serve` to create a local workspace, or `iwomc join <invitation>` to pair with one." }
         : {}),
     });
 

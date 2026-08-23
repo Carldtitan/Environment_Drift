@@ -30,12 +30,15 @@ export function OverviewRoute({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const [targetDeviceId, setTargetDeviceId] = useState<string | null>(null);
 
   if (overview === null) return <Loading label="Reading workspace state" rows={4} />;
 
   const local = overview.local;
   const projectId = overview.selectedProjectId;
-  const device = overview.devices.find((entry) => entry.state === "active") ?? overview.devices[0] ?? null;
+  const runnableDevices = overview.devices.filter((entry) => entry.state === "active");
+  const device =
+    runnableDevices.find((entry) => entry.id === targetDeviceId) ?? runnableDevices[0] ?? null;
   const exact = overview.contracts.find(
     (entry) => entry.contract.source.commit === local?.project?.commit,
   );
@@ -127,6 +130,23 @@ export function OverviewRoute({
               Verify contract
             </Button>
           </div>
+          {runnableDevices.length > 0 ? (
+            <div className="field" style={{ marginTop: 14, maxWidth: 360 }}>
+              <label htmlFor="target-device">Target checkout</label>
+              <select
+                id="target-device"
+                value={device?.id ?? ""}
+                onChange={(event) => setTargetDeviceId(event.target.value || null)}
+              >
+                {runnableDevices.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.displayName} ({entry.platform.os}/{entry.platform.arch})
+                  </option>
+                ))}
+              </select>
+              <p className="hint">The signed job runs only in the checkout this device already registered.</p>
+            </div>
+          ) : null}
           {!device ? (
             <p className="hint" style={{ marginTop: 10 }}>
               No device is enrolled in this workspace, so there is nobody to ask. Pair one from the Team screen.

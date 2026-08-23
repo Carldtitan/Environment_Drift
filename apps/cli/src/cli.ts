@@ -109,6 +109,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       {
         port: Number(flagString(args.flags, "port") ?? 0) || undefined,
         host: flagString(args.flags, "host"),
+        publicUrl: flagString(args.flags, "public-url"),
         open: flagBool(args.flags, "open"),
       },
       io,
@@ -323,6 +324,14 @@ async function dispatch(
         json,
         io,
         ...(args.positional[0] ? { invitation: args.positional[0] } : {}),
+        ...(flagString(args.flags, "url") ? { controlPlaneUrl: flagString(args.flags, "url") as string } : {}),
+      });
+    }
+
+    case "agent": {
+      const { runAgent } = await import("./agent.js");
+      return await runAgent(companion, {
+        io,
         ...(flagString(args.flags, "url") ? { controlPlaneUrl: flagString(args.flags, "url") as string } : {}),
       });
     }

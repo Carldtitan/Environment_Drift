@@ -107,7 +107,7 @@ export function renderStatus(status: StatusResult): string {
       [
         "Identity",
         status.device.localOnly
-          ? `${status.device.identity} (local identity - sign in with GitHub to share a workspace)`
+          ? `${status.device.identity} (local team identity; GitHub carries source)`
           : status.device.identity,
       ],
       ["Memory", `${status.memory.status} - ${status.memory.detail}`],

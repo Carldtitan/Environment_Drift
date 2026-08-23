@@ -81,6 +81,7 @@ export class ClaudeMemAdapter implements MemoryPort {
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
   readonly #sessionId: string;
+  readonly #initializedSessions = new Set<string>();
   #lastStatus: MemoryStatus | null = null;
 
   constructor(options: ClaudeMemOptions = {}) {
@@ -141,6 +142,7 @@ export class ClaudeMemAdapter implements MemoryPort {
       source: "iwomc-companion",
     };
 
+    const contentSessionId = projectSessionId(this.#sessionId, observation.projectPseudonym);
     try {
       assertRedacted(toolInput, redactor);
       assertRedacted(toolResponse, redactor);
@@ -151,8 +153,17 @@ export class ClaudeMemAdapter implements MemoryPort {
       throw error;
     }
 
+    // A worker needs its documented session-init hook before it can generate
+    // searchable observations. An accepted observation alone is not enough.
+    const initialized = await this.#ensureSession(contentSessionId, observation.projectPseudonym, redactor);
+    if (!initialized.ok) return { recorded: false, reason: initialized.reason };
+
     const result = await this.#request("POST", "/api/sessions/observations", {
-      claudeSessionId: `${this.#sessionId}-${observation.projectPseudonym}`,
+      // `contentSessionId` is the worker's public hook contract.  It is not
+      // a Claude-specific identifier; it is the opaque id that lets the
+      // worker group one integration's events without receiving a real path.
+      contentSessionId,
+      platformSource: "iwomc",
       tool_name: IWOMC_TOOL_NAME,
       tool_input: toolInput,
       tool_response: toolResponse,
@@ -171,6 +182,43 @@ export class ClaudeMemAdapter implements MemoryPort {
     return { recorded: true };
   }
 
+  async #ensureSession(
+    contentSessionId: string,
+    projectPseudonym: string,
+    redactor: Redactor,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (this.#initializedSessions.has(contentSessionId)) return { ok: true };
+
+    const payload = {
+      contentSessionId,
+      project: projectPseudonym,
+      // This generic prompt is deliberately separate from the redacted facts
+      // in the observation below.
+      prompt: "IWOMC records redacted environment-lifecycle evidence for this project.",
+      platformSource: "iwomc",
+      customTitle: "IWOMC environment lifecycle",
+    };
+    try {
+      // `contentSessionId` and `project` are locally generated opaque labels,
+      // never collected project content. Redact the only human-readable text
+      // in this init request without mistaking an opaque correlation id for a
+      // secret.
+      assertRedacted({ prompt: payload.prompt, customTitle: payload.customTitle }, redactor);
+    } catch (error) {
+      if (error instanceof RedactionError) return { ok: false, reason: `refused locally: ${error.message}` };
+      throw error;
+    }
+
+    const result = await this.#request("POST", "/api/sessions/init", payload);
+    if (!result.ok) return { ok: false, reason: `session initialization failed: ${result.detail}` };
+    const body = result.body as { skipped?: boolean; reason?: string } | null;
+    if (body?.skipped) {
+      return { ok: false, reason: `worker skipped session initialization (${body.reason ?? "no reason given"})` };
+    }
+    this.#initializedSessions.add(contentSessionId);
+    return { ok: true };
+  }
+
   /**
    * Explanatory history only. Results are labelled as memory in every surface
    * that renders them and are never treated as inventory or authorization.
@@ -183,9 +231,13 @@ export class ClaudeMemAdapter implements MemoryPort {
     const params = new URLSearchParams({
       query: input.query,
       type: "observations",
-      format: "index",
+      // The documented worker API returns structured observations in JSON.
+      // `index` is a display format, not the object envelope this adapter
+      // needs to render memory as explanation in the Rescue Console.
+      format: "json",
       limit: String(Math.max(1, Math.min(input.limit, 25))),
       project: input.projectPseudonym,
+      platformSource: "iwomc",
     });
     const result = await this.#request("GET", `/api/search?${params.toString()}`);
     if (!result.ok) {
@@ -249,7 +301,7 @@ function toHit(raw: unknown): MemoryHit | null {
   const record = raw as Record<string, unknown>;
   const id = record["id"];
   const title = record["title"] ?? record["subject"] ?? record["summary"];
-  const text = record["preview"] ?? record["text"] ?? record["body"] ?? record["summary"] ?? "";
+  const text = record["preview"] ?? record["text"] ?? record["body"] ?? record["narrative"] ?? record["summary"] ?? "";
   const createdAt = record["created_at"] ?? record["createdAt"] ?? null;
   if (id === undefined) return null;
   return {
@@ -263,6 +315,20 @@ function toHit(raw: unknown): MemoryHit | null {
 
 function isHit(value: MemoryHit | null): value is MemoryHit {
   return value !== null;
+}
+
+/**
+ * Keep worker sessions separate by pseudonymous project without placing a
+ * token-like identifier on the wire. This is an opaque grouping label, not a
+ * project identity or a security boundary.
+ */
+function projectSessionId(base: string, projectPseudonym: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of projectPseudonym) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${base}-${hash >>> 0}`;
 }
 
 /**

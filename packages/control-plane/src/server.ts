@@ -28,6 +28,8 @@ export interface ServerOptions {
   /** Directory containing the built console assets. */
   readonly consoleDir?: string | null;
   readonly local?: LocalContext | null;
+  /** Explicit externally reachable origin for invitation commands. */
+  readonly publicOrigin?: string | null;
   readonly version?: string;
 }
 
@@ -45,6 +47,7 @@ export function createControlPlaneServer(options: ServerOptions): Server {
   const { service, store } = options;
   const version = options.version ?? "0.1.0";
   const consoleDir = options.consoleDir ? resolvePath(options.consoleDir) : null;
+  const configuredPublicOrigin = options.publicOrigin ? normalizePublicOrigin(options.publicOrigin) : null;
 
   return createServer((req, res) => {
     void handle(req, res).catch((error: unknown) => {
@@ -216,7 +219,7 @@ export function createControlPlaneServer(options: ServerOptions): Server {
         sendJson(res, 401, {
           authenticated: false,
           detail:
-            "Open the Rescue Console with the link `iwomc serve` printed, or sign in with GitHub once a GitHub App is configured.",
+            "Open the Rescue Console with the one-time link printed by `iwomc serve`.",
         });
         return;
       }
@@ -321,7 +324,7 @@ export function createControlPlaneServer(options: ServerOptions): Server {
       sendJson(res, 201, {
         invitation: redactInvitation(created.invitation),
         token: created.token,
-        command: `iwomc join ${created.token} --url ${publicOrigin(req)}`,
+        command: `iwomc join ${created.token} --url ${configuredPublicOrigin ?? publicOrigin(req)}`,
       });
       return;
     }
@@ -513,6 +516,18 @@ function readCookie(req: IncomingMessage, name: string): string | null {
 function publicOrigin(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1";
   return `http://${host}`;
+}
+
+/** A control-plane URL that can safely be handed to another device. */
+export function normalizePublicOrigin(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("--public-url must start with http:// or https://.");
+  }
+  if (!url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("--public-url must be an origin only, for example https://iwomc.example.com.");
+  }
+  return url.origin;
 }
 
 function safeJoin(root: string, requested: string): string | null {

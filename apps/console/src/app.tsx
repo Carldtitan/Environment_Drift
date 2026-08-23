@@ -225,6 +225,9 @@ export function App() {
               ? "local identity — sign in with GitHub to share this workspace"
               : "signed in with GitHub"}
           </span>
+          {session.personId?.startsWith("local:") ? (
+            <span>Local pairing works on this network; GitHub carries the source.</span>
+          ) : null}
         </div>
       </nav>
 

@@ -20,6 +20,7 @@ import {
   SqliteControlPlaneStore,
   createControlPlaneServer,
   createPostgresStore,
+  normalizePublicOrigin,
   readPostgresConfig,
   type ControlPlaneStore,
   type LocalContext,
@@ -42,6 +43,8 @@ import { EXIT } from "./cli.js";
 export interface ServeOptions {
   readonly port?: number | undefined;
   readonly host?: string | undefined;
+  /** Externally reachable URL used in invitations and local device config. */
+  readonly publicUrl?: string | undefined;
   readonly open?: boolean;
 }
 
@@ -68,6 +71,21 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
   const bootstrap = bootstrapWorkspace(service, store, companion);
 
   const host = options.host ?? "127.0.0.1";
+  let advertisedOrigin: string | null = null;
+  try {
+    advertisedOrigin = options.publicUrl ? normalizePublicOrigin(options.publicUrl) : null;
+  } catch (error) {
+    io.err(line("danger", "Invalid public URL", (error as Error).message));
+    companion.close();
+    store.close();
+    return EXIT.usage;
+  }
+  if ((host === "0.0.0.0" || host === "::") && advertisedOrigin === null) {
+    io.err(line("attention", "A public URL is required for a shared server", "Use --public-url http://<your-LAN-IP>:<port>."));
+    companion.close();
+    store.close();
+    return EXIT.usage;
+  }
   const port = options.port ?? companion.config.consolePort;
   const consoleDir = resolveConsoleDir();
 
@@ -111,7 +129,7 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
       })),
   };
 
-  const server = createControlPlaneServer({ service, store, consoleDir, local });
+  const server = createControlPlaneServer({ service, store, consoleDir, local, publicOrigin: advertisedOrigin });
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
@@ -123,13 +141,15 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
 
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : port;
-  const origin = `http://${host}:${actualPort}`;
+  const boundOrigin = `http://${host}:${actualPort}`;
+  const origin = advertisedOrigin ?? boundOrigin;
   const consoleUrl = `${origin}/#token=${bootstrap.sessionToken}`;
 
   saveConfig({ controlPlaneUrl: origin, workspaceId: bootstrap.workspaceId, consolePort: actualPort });
 
   io.out(heading("IWOMC Rescue Console"));
-  io.out(line("ready", "Listening", origin));
+  io.out(line("ready", "Listening", boundOrigin));
+  if (origin !== boundOrigin) io.out(bullet(`Team URL: ${origin}`));
   io.out(bullet(`Workspace: ${bootstrap.workspaceName} (${bootstrap.workspaceId})`));
   io.out(bullet(`Signed in as: ${bootstrap.personId} (${bootstrap.role})`));
   io.out(bullet(`Store: ${store.kind}`));
@@ -287,7 +307,7 @@ function resolveConsoleDir(): string | null {
 // Device side: publish what exists, then run signed jobs
 // ---------------------------------------------------------------------------
 
-async function syncLocalRecords(
+export async function syncLocalRecords(
   companion: Companion,
   client: ControlPlaneClient,
   credentials: { deviceId: string; token: string },
@@ -339,7 +359,7 @@ async function syncLocalRecords(
   }
 }
 
-function startJobRunner(
+export function startJobRunner(
   companion: Companion,
   client: ControlPlaneClient,
   credentials: { deviceId: string; token: string },

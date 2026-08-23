@@ -65,9 +65,12 @@ describe("against a running worker", () => {
     const result = await memory.record(OBSERVATION);
     expect(result.recorded).toBe(true);
     expect(worker.observations).toHaveLength(1);
+    expect(worker.requests.filter((entry) => entry.path === "/api/sessions/init")).toHaveLength(1);
 
     const recorded = worker.observations[0];
     expect(recorded?.toolName).toBe(IWOMC_TOOL_NAME);
+    expect(recorded?.contentSessionId).toMatch(/^iwomc-companion-\d+$/u);
+    expect(recorded?.platformSource).toBe("iwomc");
     // Grouping happens by pseudonym, never by this machine's real directory.
     expect(recorded?.cwd).toBe(`/iwomc/${OBSERVATION.projectPseudonym}`);
     expect(recorded?.rawBody).not.toContain("C:\\");
@@ -82,6 +85,7 @@ describe("against a running worker", () => {
       (entry) => (entry.toolInput as { event: string }).event,
     );
     expect(events).toEqual(["capture", "drift", "verification", "rescue", "promotion"]);
+    expect(worker.requests.filter((entry) => entry.path === "/api/sessions/init")).toHaveLength(1);
   });
 
   it("refuses locally rather than sending credential-shaped material", async () => {

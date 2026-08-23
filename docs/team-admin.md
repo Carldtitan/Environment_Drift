@@ -9,6 +9,22 @@ iwomc serve
 This starts the API and the Rescue Console, enrolls this device, and prints a
 link carrying a one-time session token. Treat the link like a password.
 
+## Same-Wi-Fi team use
+
+GitHub distributes the source; IWOMC distributes the verified environment
+contract. For an in-person team, run the control plane on the owner's laptop
+and give it a reachable LAN URL:
+
+```bash
+iwomc serve --host 0.0.0.0 --port 4319 --public-url http://192.168.1.42:4319
+```
+
+Replace the example address with the owner's actual LAN address. The explicit
+public URL prevents invitations from incorrectly containing `0.0.0.0`. Share
+only the generated invitation command, never the owner's one-time console URL.
+For teams on different networks, use a deliberately deployed HTTPS control
+plane; do not expose the local SQLite server directly to the public internet.
+
 Without a GitHub App configured, the workspace is owned by this device's local
 owner identity, and the console labels it plainly as a local identity. Once a
 GitHub App is configured, `iwomc login` signs people in with their immutable
@@ -44,6 +60,17 @@ iwomc join <token> --url http://your-control-plane
 Only the token's hash is stored, so it can never be shown again. Invitations are
 single-use and expire after seven days, and acceptance is atomic — two people
 racing the same link cannot both join.
+
+After accepting the invite, the teammate runs this from their IWOMC checkout:
+
+```bash
+iwomc init --dir /path/to/their/project --proof "<project proof command>"
+iwomc agent
+```
+
+`agent` is the device-side half of the team feature. It makes an outbound
+connection to the shared control plane, registers only that pre-bound checkout,
+and receives signed dashboard jobs. It never lets the browser name a local path.
 
 ## Devices
 

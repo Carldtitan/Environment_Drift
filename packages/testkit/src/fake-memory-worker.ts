@@ -11,7 +11,8 @@ import type { AddressInfo } from "node:net";
  */
 
 export interface RecordedObservation {
-  readonly claudeSessionId: string;
+  readonly contentSessionId: string;
+  readonly platformSource: string | undefined;
   readonly toolName: string;
   readonly toolInput: unknown;
   readonly toolResponse: unknown;
@@ -58,6 +59,23 @@ export async function startFakeMemoryWorker(): Promise<FakeMemoryWorker> {
       return;
     }
 
+    if (req.method === "POST" && path === "/api/sessions/init") {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { contentSessionId?: string };
+          if (!parsed.contentSessionId) throw new Error("contentSessionId is required");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ status: "initialized", skipped: false }));
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid session init" }));
+        }
+      });
+      return;
+    }
+
     if (req.method === "GET" && path === "/api/search") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ observations: searchResults, sessions: [], prompts: [] }));
@@ -71,14 +89,16 @@ export async function startFakeMemoryWorker(): Promise<FakeMemoryWorker> {
         const rawBody = Buffer.concat(chunks).toString("utf8");
         try {
           const parsed = JSON.parse(rawBody) as {
-            claudeSessionId: string;
+            contentSessionId: string;
+            platformSource?: string;
             tool_name: string;
             tool_input: unknown;
             tool_response: unknown;
             cwd: string;
           };
           observations.push({
-            claudeSessionId: parsed.claudeSessionId,
+            contentSessionId: parsed.contentSessionId,
+            platformSource: parsed.platformSource,
             toolName: parsed.tool_name,
             toolInput: parsed.tool_input,
             toolResponse: parsed.tool_response,
