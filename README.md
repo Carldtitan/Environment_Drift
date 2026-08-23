@@ -1,122 +1,140 @@
 # IWOMC Rescue
 
-> A project works on one developer's computer and fails on another because the code was shared, but part of the setup was not.
+**Published on npm:** [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
 
-**IWOMC Rescue captures a verified setup contract from a working checkout, rescues a matching broken checkout, and proves the result with the project's own command.**
+IWOMC Rescue makes a teammate's broken checkout run from a verified environment contract.
 
-## The problem
+It solves one failure:
 
-Coding agents change more than source code. They install packages, use runtime versions, and create project-local state. Some of that state is not declared in the repository.
+> The code was pushed. The setup that made it work was not.
 
-That creates the most painful kind of handoff:
-
-1. Developer A gets the app working.
-2. Developer A pushes the code.
-3. Developer B clones the same revision.
-4. The app fails on B's machine.
-
-Git shared the code. It did not prove that the environment was complete.
-
-## What IWOMC does
-
-```text
-Working checkout                 Broken checkout
----------------                  ----------------
-capture real setup     ->        rescue project-local setup
-create signed contract ->        run the same proof command
-record drift           ->        report working only if it passes
-```
-
-```bash
-# Developer A: this checkout works.
-iwomc init --proof "npm test"
-iwomc capture
-
-# Developer B: same Git revision, but it does not run.
-iwomc init --proof "npm test"
-iwomc rescue --approve
-```
-
-`working` means the proof command passed. A successful install alone is not a success state.
-
-## Why existing tools do not close this gap
-
-| Tool | Valuable for | What it does not prove |
-| --- | --- | --- |
-| Git | Sharing source code | The code runs in a clean checkout |
-| Docker | Reproducing a complete written recipe | An agent used a setup step that was never added to the Dockerfile |
-| Greptile | Understanding and reviewing code | The exact environment that ran on another developer's machine |
-| Claude-Mem | Remembering agent activity and decisions | A deterministic, verified environment contract |
-
-Docker is still good engineering. IWOMC is not a Docker replacement. Docker runs the recipe that exists. IWOMC detects project-local setup that actually worked but the repository did not declare, then gives the team a path to correct the repository.
-
-## Claude-Mem integration
-
-Claude-Mem is used as the memory layer, not as the source of truth.
-
-IWOMC writes **redacted lifecycle observations** to the documented local Claude-Mem worker API for:
-
-- capture
-- declared versus observed drift
-- verification
-- rescue result
-- promoted repository repair
-
-This gives a future agent relevant context such as: "a prior rescue found an undeclared npm package for this revision." IWOMC still verifies the machine itself and runs the proof command. It never treats memory as proof, and it never sends secret values to Claude-Mem.
-
-## What is supported now
-
-| Capability | Status |
-| --- | --- |
-| npm projects | Native capture, rescue, and verification |
-| pip projects | Native capture, rescue, and verification |
-| uv projects | Native capture, rescue, and verification |
-| Fresh local verification | Clones the exact revision into a new directory and runs the proof command |
-| Modal verification | Optional clean remote verification after explicit source-upload approval |
-| Team console | Hosted dashboard for contracts, drift, rescue runs, device invitations, and audit events |
-| Other package managers | Recognised and reported honestly. They are not advertised as native rescue support. |
-
-## Safety rules
-
-- Rescue writes only project-local state such as `node_modules`, `.venv`, and `.iwomc`.
-- Rescue does not edit tracked files.
-- Rescue does not install global packages or change the machine's PATH.
-- Secret values never enter a contract, receipt, dashboard upload, or Claude-Mem observation.
-- If a secret is required, IWOMC reports its name and stops.
-- `iwomc promote` creates a reviewable repository diff so the next developer does not need a rescue.
-
-## Run from source
-
-Requires Node 22.5+ and Git.
-
-```bash
-git clone https://github.com/Carldtitan/Environment_Drift.git
-cd Environment_Drift
-pnpm install
-pnpm run build
-node apps/cli/dist/bin.js --help
-```
-
-## Install from npm
+## Install
 
 ```bash
 npm install -g iwomc
 iwomc --help
 ```
 
-Published package: [`iwomc@0.1.3`](https://www.npmjs.com/package/iwomc)
+Requires Node 22.5+ and Git.
 
-## Documentation
+## How it works
 
-- [Project author guide](docs/project-author.md)
-- [Team administration guide](docs/team-admin.md)
-- [Agent and MCP workflow](docs/agent-workflow.md)
-- [Support matrix](docs/capability-matrix.md)
-- [Security model](docs/security.md)
-- [Troubleshooting](docs/troubleshooting.md)
+### 1. Capture a working checkout
 
-## Hosted console
+```bash
+iwomc init --proof "npm test"
+iwomc capture
+```
 
-[Open IWOMC Rescue Console](https://iwomc-web-production.up.railway.app)
+IWOMC reads the repository's declared setup and compares it with the project-local setup that actually exists.
 
-The dashboard is useful after a device has joined a workspace and published a capture. It intentionally shows honest empty states before that happens.
+It records:
+
+- manifests, lockfiles, and runtime pins
+- project-local installed packages
+- undeclared packages and version drift
+- the exact Git revision
+- one proof command that defines "working"
+
+It produces a signed environment contract for that revision.
+
+### 2. Verify before sharing
+
+```bash
+iwomc verify
+```
+
+IWOMC creates a fresh checkout, applies the contract, and runs the proof command. A contract is not called verified until that command passes.
+
+### 3. Rescue a teammate's checkout
+
+```bash
+iwomc rescue --approve
+```
+
+IWOMC checks the revision and contract signature, applies only approved project-local setup, and runs the same proof command.
+
+It returns one honest result:
+
+`working` · `blocked` · `failed` · `unsupported` · `inconclusive`
+
+### 4. Fix the repository permanently
+
+```bash
+iwomc promote
+```
+
+`promote` creates a reviewable manifest diff. The team can add the missing dependency or pin, so the next checkout works without rescue.
+
+## What makes it different
+
+| Tool | Job |
+| --- | --- |
+| Git | Shares code |
+| Docker | Runs the setup written in a Dockerfile |
+| Greptile | Reviews and understands code |
+| Claude-Mem | Remembers agent actions and context |
+| **IWOMC** | Proves the setup needed for this revision works in a clean checkout |
+
+Docker is useful. IWOMC does not replace it. Docker runs a complete recipe. IWOMC finds project-local setup that was used but not declared, then gives the team a verified path to fix it.
+
+## Claude-Mem
+
+IWOMC uses Claude-Mem as a redacted, cross-session memory layer.
+
+It records these lifecycle events through Claude-Mem's documented local worker API:
+
+- capture
+- environment drift
+- verification
+- rescue outcome
+- promoted repair
+
+This helps an agent remember prior environment failures and repairs. Claude-Mem never decides whether an environment works. IWOMC proves that by running the project's own command. Secret values are never sent to Claude-Mem.
+
+## Supported ecosystems
+
+| Ecosystem | Capture | Rescue | Verify |
+| --- | :---: | :---: | :---: |
+| npm | Yes | Yes | Yes |
+| pip | Yes | Yes | Yes |
+| uv | Yes | Yes | Yes |
+
+pnpm, Yarn, Bun, Poetry, Conda, Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub, Mix, and common system package managers are recognised. They are not claimed as native rescue support yet.
+
+See the full [capability matrix](docs/capability-matrix.md).
+
+## Safety
+
+- Only writes project-local state such as `node_modules`, `.venv`, and `.iwomc`
+- Never edits tracked files during rescue
+- Never installs global packages or changes PATH
+- Never copies secret values between devices
+- Names missing secrets and stops before the proof command
+- Binds every contract to a Git revision and verifies signatures before rescue
+
+## Team use
+
+Code stays in Git. IWOMC shares the signed environment contract.
+
+1. The owner opens the [Rescue Console](https://iwomc-web-production.up.railway.app).
+2. A teammate joins with an invitation.
+3. The working device captures and verifies a contract.
+4. The teammate's device downloads the exact contract and runs rescue.
+5. The console shows drift, contracts, rescue runs, and audit events.
+
+## Package documentation
+
+| Need | Documentation |
+| --- | --- |
+| Create and verify a contract | [Project author guide](docs/project-author.md) |
+| Use with Codex or another coding agent | [Agent and MCP workflow](docs/agent-workflow.md) |
+| Invite and manage teammates | [Team administration](docs/team-admin.md) |
+| Understand security boundaries | [Security model](docs/security.md) |
+| Diagnose a failed rescue | [Troubleshooting](docs/troubleshooting.md) |
+
+The installed package also includes command documentation:
+
+```bash
+iwomc agent-docs
+```
