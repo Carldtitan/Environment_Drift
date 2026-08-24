@@ -14,7 +14,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const release = join(root, "release", "iwomc");
 // A feature release: the package timeline, autocapture, team contract
 // selection, and cross-platform application.
-const CLI_VERSION = "0.2.0";
+const CLI_VERSION = "0.2.1";
 
 const internal = ["contracts", "adapters", "companion", "control-plane", "integrations"];
 

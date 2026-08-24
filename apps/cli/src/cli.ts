@@ -50,7 +50,7 @@ import {
  * package can never disagree; `scripts/package-cli.mjs` checks this matches
  * what it is about to publish.
  */
-export const CLI_VERSION = "0.2.0";
+export const CLI_VERSION = "0.2.1";
 
 export const EXIT = {
   ok: 0,
