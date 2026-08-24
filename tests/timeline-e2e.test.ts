@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { run } from "@iwomc/companion";
 import {
@@ -205,7 +205,13 @@ describe("recording without being asked", () => {
 
   beforeAll(async () => {
     // The one place autocapture is deliberately on: this is what it tests.
-    sandbox = await createSandbox({ IWOMC_DISABLE_MEMORY: "1", IWOMC_AUTOCAPTURE: "1" });
+    sandbox = await createSandbox({
+      IWOMC_DISABLE_MEMORY: "1",
+      IWOMC_AUTOCAPTURE: "1",
+      // A short sweep so the timer path is exercised quickly: if this still
+      // does not notice, the recorder is not running rather than merely slow.
+      IWOMC_AUTOCAPTURE_INTERVAL: "5",
+    });
     project = await createNodeProject({ root: sandbox.home });
   }, 900_000);
 
@@ -236,20 +242,48 @@ describe("recording without being asked", () => {
     await installUndeclaredPackage(project.dir, appeared, "1.2.3");
 
     // Nothing is run here on purpose: the recorder has to notice by itself.
-    await expect
-      .poll(
-        async () => {
-          const result = await runIwomc(["timeline", "--json", "--no-explain"], {
-            cwd: project.dir,
-            env: sandbox.env,
-          });
-          return result
-            .json<{ recentEvents: { name: string }[] }>()
-            .recentEvents.some((event) => event.name === appeared);
-        },
-        { timeout: 120_000, interval: 3_000 },
-      )
-      .toBe(true);
+    let noticed = false;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const result = await runIwomc(["timeline", "--json", "--no-explain"], {
+              cwd: project.dir,
+              env: sandbox.env,
+            });
+            noticed = result
+              .json<{ recentEvents: { name: string }[] }>()
+              .recentEvents.some((event) => event.name === appeared);
+            return noticed;
+          },
+          { timeout: 120_000, interval: 3_000 },
+        )
+        .toBe(true);
+    } catch (error) {
+      // A recorder that never noticed is only diagnosable from its own log,
+      // and this runs on machines nobody can attach a debugger to.
+      const status = await runIwomc(["daemon", "status", "--json"], {
+        cwd: project.dir,
+        env: sandbox.env,
+      });
+      const logPath = status.json<{ logPath: string }>().logPath;
+      let log = "(no recorder log was written)";
+      try {
+        log = await readFile(logPath, "utf8");
+      } catch (readError) {
+        log = `(could not read ${logPath}: ${(readError as Error).message})`;
+      }
+      throw new Error(
+        `The recorder did not notice ${appeared}.
+` +
+          `daemon status: ${status.stdout.trim()}
+` +
+          `recorder log:
+${log.slice(-4000)}
+` +
+          `original: ${(error as Error).message}`,
+      );
+    }
   }, 300_000);
 
   it("stops when it is told to, and stays stopped", async () => {
