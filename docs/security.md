@@ -69,8 +69,11 @@ containing `%`, for which no reliable escape exists.
 
 ## The background recorder
 
-`iwomc watch` is the only part of IWOMC that runs unattended, so its limits are
-narrower than everything else's.
+The recorder is the only part of IWOMC that runs unattended, and it starts by
+itself the first time you use IWOMC in a project — so its limits are narrower
+than everything else's, and it announces itself the first time rather than
+appearing silently. `iwomc daemon status` always shows whether it is running
+and where its log is; `iwomc daemon disable` stops it permanently.
 
 - It reads only inside bound project directories: `node_modules` and the
   project-local virtual environment. Not the home directory, not the global
@@ -86,6 +89,11 @@ narrower than everything else's.
 - It does not inspect the process table. A change is attributed to a command
   only when a coding agent reports that command; otherwise the event records
   what changed and when, and says nothing about why.
+
+A recorder that cannot do its job stops rather than continuing. Five failed
+readings in a row - its store deleted underneath it, a disk that will not
+accept writes - and it shuts down and closes its observation window, instead of
+running indefinitely while recording nothing.
 
 Only one recorder per project may write to the log, so a change is never
 recorded twice. The claim is held by the running session and released when it

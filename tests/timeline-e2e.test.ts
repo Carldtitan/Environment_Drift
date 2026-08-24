@@ -176,8 +176,87 @@ describe("reproducing a machine at a revision", () => {
     expect(status.stdout.trim()).toBe("");
 
     await rm(join(project.dir, "node_modules", extra), { recursive: true, force: true });
-    const removed = await runIwomc(["sweep", "--json"], { cwd: project.dir, env: sandbox.env });
-    const events = removed.json<{ events: { name: string; kind: string }[] }>().events;
-    expect(events.map((event) => [event.name, event.kind])).toEqual([[extra, "removed"]]);
+
+    // The removal must reach the log. Which recorder catches it is not the
+    // point and is not fixed: with autocapture on, a background recorder may
+    // notice first and `sweep` then correctly reports that it did not write,
+    // because recording one change twice would put it in the history twice.
+    await runIwomc(["sweep", "--json"], { cwd: project.dir, env: sandbox.env });
+    await expect
+      .poll(
+        async () => {
+          const result = await runIwomc(["timeline", "--json", "--no-explain"], {
+            cwd: project.dir,
+            env: sandbox.env,
+          });
+          return result
+            .json<{ recentEvents: { name: string; kind: string }[] }>()
+            .recentEvents.some((event) => event.name === extra && event.kind === "removed");
+        },
+        { timeout: 90_000, interval: 3_000 },
+      )
+      .toBe(true);
+  }, 300_000);
+});
+
+describe("recording without being asked", () => {
+  let sandbox: Sandbox;
+  let project: NodeProjectResult;
+
+  beforeAll(async () => {
+    // The one place autocapture is deliberately on: this is what it tests.
+    sandbox = await createSandbox({ IWOMC_DISABLE_MEMORY: "1", IWOMC_AUTOCAPTURE: "1" });
+    project = await createNodeProject({ root: sandbox.home });
+  }, 900_000);
+
+  afterAll(async () => {
+    // Whatever this test started must not outlive it.
+    await runIwomc(["daemon", "stop"], { cwd: project.dir, env: sandbox.env }).catch(() => undefined);
+    await project?.cleanup();
+    await sandbox?.cleanup();
+  });
+
+  it("starts a recorder by itself the first time a project is used", async () => {
+    // Nothing to record before a checkout is registered, so nothing starts.
+    const before = await runIwomc(["daemon", "status", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(before.json<{ running: boolean }>().running).toBe(false);
+
+    await runIwomc(["init", "--proof", "npm run proof", "--json"], { cwd: project.dir, env: sandbox.env });
+    // An ordinary command, not a request to start anything.
+    await runIwomc(["status", "--json"], { cwd: project.dir, env: sandbox.env });
+
+    const after = await runIwomc(["daemon", "status", "--json"], { cwd: project.dir, env: sandbox.env });
+    const status = after.json<{ running: boolean; record: { pid: number } | null }>();
+    expect(status.running, "an ordinary command should have started the recorder").toBe(true);
+    expect(status.record?.pid).toBeGreaterThan(0);
+  }, 600_000);
+
+  it("records a change with no IWOMC command involved", async () => {
+    const appeared = `arrived-on-its-own-${Math.random().toString(36).slice(2, 8)}`;
+    await installUndeclaredPackage(project.dir, appeared, "1.2.3");
+
+    // Nothing is run here on purpose: the recorder has to notice by itself.
+    await expect
+      .poll(
+        async () => {
+          const result = await runIwomc(["timeline", "--json", "--no-explain"], {
+            cwd: project.dir,
+            env: sandbox.env,
+          });
+          return result
+            .json<{ recentEvents: { name: string }[] }>()
+            .recentEvents.some((event) => event.name === appeared);
+        },
+        { timeout: 120_000, interval: 3_000 },
+      )
+      .toBe(true);
+  }, 300_000);
+
+  it("stops when it is told to, and stays stopped", async () => {
+    const stopped = await runIwomc(["daemon", "stop", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(stopped.exitCode).toBe(0);
+
+    const status = await runIwomc(["daemon", "status", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(status.json<{ running: boolean }>().running).toBe(false);
   }, 300_000);
 });

@@ -28,6 +28,16 @@ export interface IwomcConfig {
   readonly claudeMemBaseUrl: string | null;
   readonly consolePort: number;
   readonly requireApprovalForMutation: boolean;
+  /**
+   * Whether IWOMC keeps a recorder running by itself.
+   *
+   * On, a background recorder starts the first time you use IWOMC in a project
+   * and keeps the package log current without anyone remembering to start it.
+   * Off, nothing runs unless you run `iwomc watch` yourself.
+   */
+  readonly autocapture: boolean;
+  /** How often the background recorder takes a full reading, in seconds. */
+  readonly autocaptureIntervalSeconds: number;
 }
 
 export const DEFAULT_CONFIG: IwomcConfig = {
@@ -36,7 +46,7 @@ export const DEFAULT_CONFIG: IwomcConfig = {
   modalProfile: null,
   // Enforced ceiling for this build. Verification refuses to start when the
   // remaining budget cannot cover the per-run cap.
-  modalBudgetUsd: 30.0,
+  modalBudgetUsd: 50.0,
   modalPerRunCapUsd: 0.5,
   modalCpuLimit: 2,
   modalMemoryMb: 2048,
@@ -45,6 +55,11 @@ export const DEFAULT_CONFIG: IwomcConfig = {
   claudeMemBaseUrl: null,
   consolePort: 4319,
   requireApprovalForMutation: true,
+  // On by default: a log that only exists when somebody remembered to start it
+  // is not much of a log. It announces itself the first time and is switched
+  // off with one command.
+  autocapture: true,
+  autocaptureIntervalSeconds: 45,
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): IwomcConfig {
@@ -67,6 +82,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IwomcConfig {
     consolePort: numberFrom(env["IWOMC_CONSOLE_PORT"]) ?? fileConfig.consolePort ?? DEFAULT_CONFIG.consolePort,
     modalBudgetUsd:
       numberFrom(env["IWOMC_MODAL_BUDGET_USD"]) ?? fileConfig.modalBudgetUsd ?? DEFAULT_CONFIG.modalBudgetUsd,
+    autocapture:
+      booleanFrom(env["IWOMC_AUTOCAPTURE"]) ?? fileConfig.autocapture ?? DEFAULT_CONFIG.autocapture,
+    autocaptureIntervalSeconds:
+      numberFrom(env["IWOMC_AUTOCAPTURE_INTERVAL"]) ??
+      fileConfig.autocaptureIntervalSeconds ??
+      DEFAULT_CONFIG.autocaptureIntervalSeconds,
   };
   return merged;
 }
@@ -78,6 +99,20 @@ export function saveConfig(config: Partial<IwomcConfig>, env: NodeJS.ProcessEnv 
   const next = { ...current, ...config };
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   return next;
+}
+
+/**
+ * Read a switch from the environment.
+ *
+ * Anything unrecognised returns null rather than false, so a typo falls back
+ * to the configured value instead of silently turning a feature off.
+ */
+function booleanFrom(value: string | undefined): boolean | null {
+  if (value === undefined) return null;
+  const text = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(text)) return true;
+  if (["0", "false", "no", "off"].includes(text)) return false;
+  return null;
 }
 
 function numberFrom(value: string | undefined): number | null {

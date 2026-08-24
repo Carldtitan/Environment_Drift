@@ -20,7 +20,18 @@ export interface Sandbox {
 
 export async function createSandbox(overrides: Record<string, string> = {}): Promise<Sandbox> {
   const home = await mkdtemp(join(tmpdir(), "iwomc-home-"));
-  const env: NodeJS.ProcessEnv = { ...process.env, IWOMC_HOME: home, ...overrides };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    IWOMC_HOME: home,
+    // Off unless a test asks for it. Autocapture starts a real background
+    // recorder, and a test that is not about autocapture should not be racing
+    // one: the recorder would catch a change first and the command under test
+    // would correctly report that it did not record it, which looks like a
+    // failure and is not one. Tests that *are* about autocapture pass
+    // IWOMC_AUTOCAPTURE: "1".
+    IWOMC_AUTOCAPTURE: "0",
+    ...overrides,
+  };
   return {
     home,
     env,

@@ -29,7 +29,13 @@ import { rescue as runRescue, projectPseudonym, type RescueResult } from "./resc
 import { draftProofCommand } from "./proof.js";
 import { applyPromotion, proposePromotion, type PromotionProposal } from "./promote.js";
 import { LocalFreshDirectoryVerifier } from "./verify-local.js";
-import { loadConfig, validateIntegrationConfig, type IntegrationReport, type IwomcConfig } from "./config.js";
+import {
+  loadConfig,
+  saveConfig,
+  validateIntegrationConfig,
+  type IntegrationReport,
+  type IwomcConfig,
+} from "./config.js";
 import { probe } from "./exec.js";
 import type { MemoryPort, MemoryStatus, MemoryTimelineEntry, VerifierPort } from "./ports.js";
 import { NotAGitRepositoryError, expandCommit } from "./git.js";
@@ -162,7 +168,7 @@ export interface TimelineDiffResult {
 export class Companion {
   readonly store: CompanionStore;
   readonly registry: AdapterRegistry;
-  readonly config: IwomcConfig;
+  config: IwomcConfig;
   readonly device: DeviceIdentity;
   readonly #memory: MemoryPort | undefined;
   readonly #verifiers: readonly VerifierPort[];
@@ -186,6 +192,20 @@ export class Companion {
 
   close(): void {
     this.store.close();
+  }
+
+  /**
+   * Turn the background recorder on or off for this device.
+   *
+   * Written to the config file rather than held in memory, because the answer
+   * has to survive the command that changed it - the next `iwomc status` is a
+   * different process, and it is the one that decides whether to start a
+   * recorder.
+   */
+  setAutocapture(enabled: boolean): IwomcConfig {
+    const next = saveConfig({ autocapture: enabled }, this.#env);
+    this.config = next;
+    return next;
   }
 
   // -- status -------------------------------------------------------------

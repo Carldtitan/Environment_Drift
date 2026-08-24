@@ -10,6 +10,8 @@ export * from "./project.js";
 export * from "./ports.js";
 export * from "./timeline.js";
 export * from "./watch.js";
+export * from "./daemon.js";
+export * from "./autostart.js";
 export * from "./history.js";
 export * from "./choose-contract.js";
 export * from "./agreement.js";

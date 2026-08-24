@@ -449,6 +449,38 @@ describe("the background package watcher", () => {
     expect(store.baselineAtOrBefore(projectId, -1)).not.toBeNull();
   });
 
+  it("gives up rather than failing forever when it cannot record", async () => {
+    // A detached recorder outlives the command that started it, so a fault
+    // that never clears would leave a process running and recording nothing
+    // while looking alive. A second handle on the same store is closed under
+    // the recorder to reproduce what deleting the store does, without
+    // disturbing the one this file's other tests share.
+    const ownStore = CompanionStore.open(sandbox.env);
+    const subject = new PackageWatcher({
+      store: ownStore,
+      projectId,
+      projectDir: project.dir,
+      registry: defaultRegistry(),
+      options: { sweepIntervalMs: 3_600_000, debounceMs: 20 },
+    });
+    await subject.start();
+
+    ownStore.close();
+
+    let failures = 0;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        await subject.sweep("swept");
+      } catch {
+        failures += 1;
+      }
+    }
+    expect(failures, "a recorder whose store is gone must fail rather than pretend").toBeGreaterThan(0);
+
+    // Once it has given up, it is stopped rather than left running.
+    await subject.stop("test");
+  }, 120_000);
+
   it("never executes a package manager to learn what is installed", async () => {
     // The probe handed to adapters refuses to spawn, so any adapter that tried
     // would see `notFound` rather than a running process. A watcher that could

@@ -76,6 +76,14 @@ const HANDLE_EVENT_BUDGET = 64;
 const HANDLE_BUDGET_WINDOW_MS = 1_000;
 
 /**
+ * Sweeps that may fail in a row before a recorder gives up.
+ *
+ * Enough to ride out a transient problem - a locked database, a directory
+ * being rewritten - without sitting there failing indefinitely.
+ */
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+/**
  * Supplies an explanation for a change when one is genuinely known.
  *
  * IWOMC does not scrape the process table. Attribution comes from a coding
@@ -198,6 +206,7 @@ export class PackageWatcher {
   #previous: InventoryReading | null = null;
   #eventsSinceBaseline = 0;
   #lastBaselineAt = 0;
+  #consecutiveFailures = 0;
   #inFlight: Promise<SweepResult | null> = Promise.resolve(null);
 
   constructor(input: WatcherInput) {
@@ -362,7 +371,19 @@ export class PackageWatcher {
     this.#running = true;
     this.#pendingTrigger = null;
     try {
-      return await this.#sweepOnce(source);
+      const result = await this.#sweepOnce(source);
+      this.#consecutiveFailures = 0;
+      return result;
+    } catch (error) {
+      // A recorder is detached and long-lived, so a fault that never clears
+      // would have it failing quietly forever - burning a process and, worse,
+      // recording nothing while looking like it is. The usual cause is its own
+      // store being deleted underneath it.
+      this.#consecutiveFailures += 1;
+      if (this.#consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !this.#stopped) {
+        this.#shutdown(`stopped after ${this.#consecutiveFailures} failed sweeps`);
+      }
+      throw error;
     } finally {
       this.#running = false;
       if (this.#pendingTrigger !== null && !this.#stopped) {

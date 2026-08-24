@@ -153,6 +153,11 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
         name: "--all",
         description: "Watch every checkout registered on this device, not only this one.",
       },
+      {
+        name: "--daemon",
+        description:
+          "Run detached, writing to a log file instead of the terminal. Used by the background recorder; you would not normally pass it yourself.",
+      },
       { name: "--json", description: "Emit one JSON object per sweep that recorded a change." },
     ],
     exitCodes: COMMON_EXITS,
@@ -204,6 +209,20 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     ],
     exitCodes: COMMON_EXITS,
     nextActions: ["Both sides must be the same kind: two revisions, or two instants."],
+  },
+  {
+    name: "daemon",
+    summary: "Manage the background recorder that keeps the package log current.",
+    usage: "iwomc daemon <status|start|stop|enable|disable> [--json]",
+    effects:
+      "`start` and `stop` control the recorder for now. `enable` and `disable` also register or remove a per-user login entry, so it comes back after a reboot: a Scheduled Task on Windows, a LaunchAgent on macOS, a systemd user service on Linux. None of them needs administrator rights, and none touches the repository.",
+    approval: "None, but `enable` writes to your account's login configuration and says exactly what it wrote.",
+    flags: [{ name: "--json", description: "Machine-readable output." }],
+    exitCodes: COMMON_EXITS,
+    nextActions: [
+      "`iwomc daemon status` shows whether a recorder is running and where its log is.",
+      "Autocapture is on by default; `iwomc daemon disable` turns it off for this device.",
+    ],
   },
   {
     name: "doctor",

@@ -1,9 +1,19 @@
+import { appendFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { BlockedError, BLOCKER_LABELS, type Blocker, type RescueEvent } from "@iwomc/contracts";
 import {
   Companion,
   NotAGitRepositoryError,
   RecorderBusyError,
+  clearDaemonRecord,
+  daemonLogPath,
+  daemonStatus,
+  startDaemon,
+  stopDaemon,
+  installAutostart,
+  removeAutostart,
+  autostartStatus,
   formatCommand,
   type SweepResult,
 } from "@iwomc/companion";
@@ -147,6 +157,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
   let companion: Companion | null = null;
   try {
     companion = await buildCompanion();
+    ensureRecording(companion, args.command, json, io);
     return await dispatch(args, companion, { dir, json, io });
   } catch (error) {
     if (error instanceof BlockedError) {
@@ -179,7 +190,8 @@ async function dispatch(
   companion: Companion,
   ctx: { dir: string; json: boolean; io: CliIo },
 ): Promise<number> {
-  const { dir, json, io } = ctx;
+  const { dir, json } = ctx;
+  let io = ctx.io;
 
   switch (args.command) {
     case "status": {
@@ -351,10 +363,33 @@ async function dispatch(
     }
 
     case "watch": {
-      const interval = Number(flagString(args.flags, "interval") ?? "45");
+      const interval = Number(
+        flagString(args.flags, "interval") ?? String(companion.config.autocaptureIntervalSeconds),
+      );
       if (!Number.isFinite(interval) || interval < 5) {
         io.err("Usage: iwomc watch [--interval <seconds, at least 5>]");
         return EXIT.usage;
+      }
+
+      // Running detached: there is no terminal to write to, and the record of
+      // which process is recording has to be cleared when it stops so the next
+      // command does not think a dead process is still watching.
+      const asDaemon = flagBool(args.flags, "daemon");
+      if (asDaemon) {
+        const logPath = process.env["IWOMC_RECORDER_LOG"] ?? daemonLogPath();
+        const append = (text: string): void => {
+          try {
+            appendFileSync(logPath, `${new Date().toISOString()} ${text}
+`, "utf8");
+          } catch {
+            // A log we cannot write is not a reason to stop recording.
+          }
+        };
+        io = { out: append, err: append };
+        const release = () => clearDaemonRecord();
+        process.once("exit", release);
+        process.once("SIGINT", release);
+        process.once("SIGTERM", release);
       }
       // Resolves when every recorder this command started has stopped, so a
       // checkout that disappears ends the command instead of leaving it
@@ -511,6 +546,72 @@ async function dispatch(
       return result.missing.length > 0 ? EXIT.blocked : EXIT.ok;
     }
 
+    case "daemon": {
+      const action = args.positional[0] ?? "status";
+      const entry = cliEntry();
+
+      if (action === "status") {
+        const status = daemonStatus();
+        const autostart = autostartStatus({ entry });
+        if (json) {
+          io.out(JSON.stringify({ ...status, autostart, autocapture: companion.config.autocapture }, null, 2));
+          return EXIT.ok;
+        }
+        io.out(heading("Background recorder"));
+        io.out(line(status.running ? "ready" : "attention", status.running ? "Recording" : "Not running", status.detail));
+        io.out(bullet(`Autocapture is ${companion.config.autocapture ? "on" : "off"} for this device.`));
+        io.out(bullet(autostart.installed ? `Starts at login. ${autostart.detail}` : "Does not start at login."));
+        io.out(style.dim(`  Log: ${status.logPath}`));
+        return EXIT.ok;
+      }
+
+      if (action === "start") {
+        const result = startDaemon({ entry });
+        if (json) io.out(JSON.stringify(result, null, 2));
+        else io.out(line(result.started || result.alreadyRunning ? "ready" : "danger", result.detail));
+        return result.started || result.alreadyRunning ? EXIT.ok : EXIT.failed;
+      }
+
+      if (action === "stop") {
+        const result = stopDaemon();
+        if (json) io.out(JSON.stringify(result, null, 2));
+        else io.out(line("ready", result.detail));
+        return EXIT.ok;
+      }
+
+      if (action === "enable" || action === "disable") {
+        // Two separate things, deliberately changed together: whether IWOMC may
+        // start a recorder at all, and whether the operating system brings one
+        // back after a reboot.
+        const enable = action === "enable";
+        companion.setAutocapture(enable);
+        const autostart = enable
+          ? installAutostart({ entry, iwomcHome: process.env["IWOMC_HOME"] ?? null })
+          : removeAutostart({ entry });
+        if (!enable) stopDaemon();
+        const started = enable ? startDaemon({ entry }) : null;
+
+        if (json) {
+          io.out(JSON.stringify({ autocapture: enable, autostart, started }, null, 2));
+          return EXIT.ok;
+        }
+        io.out(heading(enable ? "Autocapture on" : "Autocapture off"));
+        io.out(
+          line(
+            enable ? "ready" : "attention",
+            enable ? "IWOMC will keep a recorder running" : "IWOMC will not start a recorder",
+          ),
+        );
+        io.out(bullet(autostart.detail));
+        if (autostart.evidence) io.out(style.dim(`  ${autostart.evidence}`));
+        if (started) io.out(bullet(started.detail));
+        return autostart.ok ? EXIT.ok : EXIT.failed;
+      }
+
+      io.err("Usage: iwomc daemon <status|start|stop|enable|disable>");
+      return EXIT.usage;
+    }
+
     case "doctor": {
       const report = await companion.doctor(dir);
       if (json) io.out(JSON.stringify(report, null, 2));
@@ -573,4 +674,73 @@ function formatEvent(event: RescueEvent): string {
     default:
       return `${prefix} ${style.dim(event.kind.padEnd(16))} ${event.message}`;
   }
+}
+
+/**
+ * Absolute path of this CLI's entry point.
+ *
+ * A detached recorder is spawned as `node <entry> watch --all --daemon`, so it
+ * has to be a real path rather than whatever `iwomc` happens to resolve to on
+ * the caller's PATH - which may not be on the PATH of a login session at all.
+ */
+export function cliEntry(): string {
+  return fileURLToPath(new URL("./bin.js", import.meta.url));
+}
+
+/**
+ * Commands that mean somebody is working on a project.
+ *
+ * These are the moments worth having a recorder for. Reading the help, asking
+ * the version, or managing the recorder itself are not - starting a background
+ * process because someone typed `iwomc help` would be absurd.
+ */
+const COMMANDS_WORTH_RECORDING = new Set([
+  "init",
+  "status",
+  "capture",
+  "verify",
+  "rescue",
+  "promote",
+  "timeline",
+  "diff",
+  "sweep",
+  "approve",
+  "proof",
+]);
+
+/**
+ * Start the background recorder if it should be running and is not.
+ *
+ * The whole point of autocapture is that nobody has to remember: a log that
+ * only exists when someone thought to start it is missing exactly when it
+ * matters, because nobody starts a recorder *before* the install that breaks
+ * their teammate. Nobody knows which install that is until afterwards.
+ *
+ * It says so the first time. A background process that appeared on someone's
+ * machine without telling them is the kind of thing this product exists not to
+ * do, so this is announced once, shown by `iwomc daemon status`, and switched
+ * off by `iwomc daemon disable`.
+ */
+function ensureRecording(companion: Companion, command: string, json: boolean, io: CliIo): void {
+  if (!companion.config.autocapture) return;
+  if (!COMMANDS_WORTH_RECORDING.has(command)) return;
+  // Nothing to record until at least one checkout is registered.
+  if (companion.listBindings().length === 0) return;
+  if (daemonStatus().running) return;
+
+  const result = startDaemon({ entry: cliEntry() });
+  if (!result.started || json) return;
+
+  const announced = companion.store.getMeta("autocapture_announced") === "yes";
+  if (announced) return;
+  companion.store.setMeta("autocapture_announced", "yes");
+
+  io.err(line("ready", "IWOMC is now recording package changes in the background"));
+  io.err(
+    wrapText(
+      "It records installs, upgrades, downgrades, and removals for the checkouts you have registered, so `iwomc timeline` can tell you what your machine had at any commit. It reads those projects' package folders and nothing else.",
+    ),
+  );
+  io.err(style.dim("  Stop it with `iwomc daemon disable`. Check it with `iwomc daemon status`."));
+  io.err("");
 }

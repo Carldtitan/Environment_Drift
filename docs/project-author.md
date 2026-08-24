@@ -94,7 +94,22 @@ Capture reads the present. It cannot tell an install from a transitive
 dependency with certainty, and it cannot see that a package had to be moved
 *back* a version - a snapshot has no way to say "down".
 
-Leave the recorder running while you work:
+You do not have to remember to start anything. The first time you use IWOMC in
+a project it starts a background recorder, says so, and keeps the log current
+from then on. To manage it:
+
+```bash
+iwomc daemon status    # running? since when? where is the log?
+iwomc daemon enable    # also bring it back after a reboot
+iwomc daemon disable   # stop it, and stop it starting
+```
+
+`iwomc daemon enable` registers a per-user login entry — a Scheduled Task on
+Windows, a LaunchAgent on macOS, a systemd user service on Linux. None of them
+needs administrator rights, all three are removed by `disable`, and each one
+tells you exactly what it wrote.
+
+You can still run a recorder in the foreground:
 
 ```bash
 iwomc watch          # this checkout

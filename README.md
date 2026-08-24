@@ -74,11 +74,16 @@ A contract describes one commit. It cannot tell you what was installed at 2pm
 last Tuesday, and it cannot express a *downgrade* — which is often the thing
 that made a project work.
 
-So IWOMC can also record changes as they happen:
+So IWOMC records changes as they happen, without being asked. The first time
+you use it in a project it starts a background recorder, tells you it has done
+so, and keeps the log current from then on — because nobody starts a recorder
+*before* the install that breaks their teammate. Nobody knows which install
+that is until afterwards.
 
 ```bash
-iwomc watch          # this project
-iwomc watch --all    # every project registered on this machine
+iwomc daemon status    # is it running, and where is its log
+iwomc daemon enable    # also start it again after a reboot
+iwomc daemon disable   # stop, and stop starting
 ```
 
 It notices the moment `node_modules` or your virtual environment changes, and
@@ -93,7 +98,7 @@ iwomc diff <their-commit> <your-commit>   # what's different between the two
 The recorder reads your project's package folders and nothing else. It never
 runs a package manager, never looks outside the projects you've registered,
 never touches a file in your repository, and never uploads the history
-anywhere.
+anywhere. `iwomc daemon disable` stops it for good.
 
 ## Two things it won't do
 
