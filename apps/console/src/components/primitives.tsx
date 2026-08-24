@@ -177,3 +177,28 @@ export function shortDigest(digest: string | undefined): string {
   if (!digest) return "-";
   return digest.startsWith("sha256:") ? digest.slice(7, 19) : digest.slice(0, 12);
 }
+
+/**
+ * Which device should run work requested from this screen.
+ *
+ * On a team of one there is a single device and any choice is the same choice.
+ * On a team of ten, "the first active device in the list" means sending your
+ * rescue to whichever teammate's laptop happens to sort first - possibly one
+ * that has not been switched on for months, in which case the job sits queued
+ * until it expires and nobody finds out why.
+ *
+ * The console you are looking at usually belongs to a machine, and that is the
+ * obvious default. Failing that, the device seen most recently is the one most
+ * likely to still be there.
+ */
+export function preferredDevice<
+  T extends { id: string; state: string; lastSeenAt?: string },
+>(devices: readonly T[], localDeviceId?: string | null): T | null {
+  const active = devices.filter((entry) => entry.state === "active");
+  const here = localDeviceId ? active.find((entry) => entry.id === localDeviceId) : undefined;
+  if (here) return here;
+  return (
+    [...active].sort((left, right) => (right.lastSeenAt ?? "").localeCompare(left.lastSeenAt ?? ""))[0] ??
+    null
+  );
+}

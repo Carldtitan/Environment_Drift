@@ -45,8 +45,11 @@ export async function syncProjectBinding(
     projectId: remote.projectId,
     workspaceId: companion.device.workspaceId,
   };
-  companion.store.saveBinding(next);
+  // The local binding has a unique remote/subdirectory identity. Remove its
+  // temporary device-local id before inserting the shared id returned by the
+  // control plane, otherwise a second teammate cannot bind the same checkout.
   if (remote.projectId !== binding.projectId) companion.store.deleteBinding(binding.projectId);
+  companion.store.saveBinding(next);
   return { binding: next, synced: true };
 }
 

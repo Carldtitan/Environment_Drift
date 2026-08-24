@@ -8,6 +8,7 @@ import {
   IconRun,
   IconSettings,
   IconTeam,
+  IconTimeline,
   Wordmark,
 } from "./components/icons.tsx";
 import { Loading, Notice } from "./components/primitives.tsx";
@@ -15,6 +16,7 @@ import { OverviewRoute } from "./routes/overview.tsx";
 import { ContractsRoute } from "./routes/contracts.tsx";
 import { RunsRoute } from "./routes/runs.tsx";
 import { DriftRoute } from "./routes/drift.tsx";
+import { TimelineRoute } from "./routes/timeline.tsx";
 import { TeamRoute } from "./routes/team.tsx";
 import { SettingsRoute } from "./routes/settings.tsx";
 
@@ -23,6 +25,12 @@ const ROUTES = [
   { id: "contracts", label: "Contracts", question: "What setup is approved for which revision?", Icon: IconContract },
   { id: "runs", label: "Rescue runs", question: "What happened on this device?", Icon: IconRun },
   { id: "drift", label: "Drift", question: "What is used here that the repository does not declare?", Icon: IconDrift },
+  {
+    id: "timeline",
+    label: "Timeline",
+    question: "What was installed here at a given moment, or at a given revision?",
+    Icon: IconTimeline,
+  },
   { id: "team", label: "Team", question: "Who and which devices can reach this workspace?", Icon: IconTeam },
   { id: "settings", label: "Settings", question: "Which integrations are actually active?", Icon: IconSettings },
 ] as const;
@@ -261,13 +269,14 @@ export function App() {
           {overviewError ? <Notice tone="danger">{overviewError}</Notice> : null}
 
           {route === "overview" ? (
-            <OverviewRoute overview={overview} onChanged={reloadOverview} />
+            <OverviewRoute overview={overview} onChanged={reloadOverview} localDeviceId={session?.localDeviceId ?? null} />
           ) : null}
           {route === "contracts" ? (
-            <ContractsRoute overview={overview} onChanged={reloadOverview} />
+            <ContractsRoute overview={overview} onChanged={reloadOverview} localDeviceId={session?.localDeviceId ?? null} />
           ) : null}
           {route === "runs" ? <RunsRoute overview={overview} /> : null}
-          {route === "drift" ? <DriftRoute projectId={projectId} overview={overview} onChanged={reloadOverview} /> : null}
+          {route === "drift" ? <DriftRoute projectId={projectId} overview={overview} onChanged={reloadOverview} localDeviceId={session?.localDeviceId ?? null} /> : null}
+          {route === "timeline" ? <TimelineRoute projectId={projectId} /> : null}
           {route === "team" ? <TeamRoute /> : null}
           {route === "settings" ? <SettingsRoute /> : null}
         </div>

@@ -91,6 +91,7 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
     projectId: input.project.binding.projectId,
     contractId: input.contract.id,
     commit: input.project.git.commit,
+    checkoutPath: input.project.projectDir,
     state,
     startedAt,
   });
@@ -293,6 +294,7 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
     completedKeys: input.store.completedIdempotencyKeys(
       input.project.binding.projectId,
       input.contract.id,
+      input.project.projectDir,
     ),
     emit,
     journal,

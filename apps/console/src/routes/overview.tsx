@@ -10,6 +10,7 @@ import {
   Mono,
   Notice,
   Pill,
+  preferredDevice,
   relativeTime,
   shortDigest,
 } from "../components/primitives.tsx";
@@ -23,9 +24,11 @@ import { RunStatePill, SignalPanel, signalsFor, SupportPill } from "../component
 export function OverviewRoute({
   overview,
   onChanged,
+  localDeviceId,
 }: {
   overview: Overview | null;
   onChanged: () => Promise<void>;
+  localDeviceId?: string | null;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,8 +40,11 @@ export function OverviewRoute({
   const local = overview.local;
   const projectId = overview.selectedProjectId;
   const runnableDevices = overview.devices.filter((entry) => entry.state === "active");
+  // An explicit choice wins; otherwise this machine, then whichever device
+  // was seen most recently.
   const device =
-    runnableDevices.find((entry) => entry.id === targetDeviceId) ?? runnableDevices[0] ?? null;
+    runnableDevices.find((entry) => entry.id === targetDeviceId) ??
+    preferredDevice(runnableDevices, localDeviceId);
   const exact = overview.contracts.find(
     (entry) => entry.contract.source.commit === local?.project?.commit,
   );

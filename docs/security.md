@@ -67,6 +67,36 @@ it delegates to, and runs that instead. Where no such script exists it builds a
 `cmd.exe` command line with C-runtime quoting, and refuses any argument
 containing `%`, for which no reliable escape exists.
 
+## The background recorder
+
+`iwomc watch` is the only part of IWOMC that runs unattended, so its limits are
+narrower than everything else's.
+
+- It reads only inside bound project directories: `node_modules` and the
+  project-local virtual environment. Not the home directory, not the global
+  package cache, not another project.
+- It executes nothing. The probe runner handed to adapters during a sweep
+  refuses to spawn, so no adapter - present or future - can turn a resident
+  daemon into a command runner.
+- It writes only to the encrypted local store. It never touches a repository
+  file, and the log is never uploaded to the control plane.
+- Event payloads are sealed with the same AES-256-GCM key as receipts and
+  contracts, because a list of a developer's dependencies over time is
+  machine-identifying material.
+- It does not inspect the process table. A change is attributed to a command
+  only when a coding agent reports that command; otherwise the event records
+  what changed and when, and says nothing about why.
+
+Only one recorder per project may write to the log, so a change is never
+recorded twice. The claim is held by the running session and released when it
+stops; if the process was killed instead, the next command checks whether that
+process still exists and takes over immediately rather than waiting.
+
+Every answer derived from the log reports the periods the watcher was not
+running. An open watch session is treated as covering time only up to its last
+heartbeat, so a watcher that was killed stops vouching for the hours after it
+died.
+
 ## Rescue's blast radius
 
 - Writes are confined to `.iwomc/` and project-local environment directories.
@@ -74,6 +104,10 @@ containing `%`, for which no reliable escape exists.
 - Declared-file digests are compared before and after materialization; if a
   tracked file changed, the run fails and names it.
 - Steps are journalled, so an interrupted rescue resumes rather than repeating.
+  The journal is scoped to the directory the work was done in, so a second
+  checkout of the same project is never treated as already prepared.
+- An install that would create a lockfile where the repository keeps none is
+  told not to, so a rescue leaves no file the project did not have.
 
 ## Audit
 

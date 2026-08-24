@@ -23,6 +23,7 @@ import {
   type SecretRequirement,
   type SupportLevel,
   type SystemToolRequirement,
+  type PackageEventV1,
 } from "@iwomc/contracts";
 import {
   isUnsupported,
@@ -55,6 +56,16 @@ export interface CaptureInput {
   readonly proof: ProofCommand | null;
   /** Package-manager processes observed inside a managed boundary. */
   readonly observedProcesses?: readonly ObservedProcess[];
+  /**
+   * Changes the package log recorded while this revision was checked out.
+   *
+   * This is the strongest evidence a capture can have that a package was
+   * installed here rather than pulled in transitively: it is a recorded
+   * before-and-after, with the exact version and the moment it changed, not an
+   * inference from the shape of `node_modules`. Reachability analysis stays in
+   * place for everything installed before the log existed.
+   */
+  readonly recordedChanges?: readonly PackageEventV1[];
   readonly agentSession?: { provider: string; sessionRef: string };
   /** Explicit project decisions baked into the contract's policy block. */
   readonly policyOverrides?: Partial<ContractPolicy>;
@@ -142,6 +153,22 @@ export async function captureEnvironment(input: CaptureInput): Promise<CaptureRe
     const observed: ObservedEffect[] = [...(await adapter.deriveObservedEffects(ctx))];
     for (const observedProcess of input.observedProcesses ?? []) {
       observed.push(...adapter.observeProcess(observedProcess));
+    }
+
+    const recorded = (input.recordedChanges ?? []).filter(
+      (event) => event.adapterId === adapter.manifest.id,
+    );
+    for (const effect of effectsFromLog(adapter.manifest.manager, recorded)) observed.push(effect);
+    for (const event of recorded) {
+      evidence.push({
+        id: `package-event:${event.id}`,
+        source: "observed",
+        confidence: "high",
+        adapterId: adapter.manifest.id,
+        kind: "package_change",
+        summary: `${event.name} ${describeChange(event)} while ${event.commit ? event.commit.slice(0, 12) : "this revision"} was checked out`,
+        observedAt: event.at,
+      });
     }
 
     for (const [index, effect] of observed.entries()) {
@@ -532,4 +559,73 @@ function baseCoverageGaps(recognizedManagers: readonly string[]): CoverageGap[] 
 export async function buildProjectRedactor(projectDir: string): Promise<Redactor> {
   const { secretValues } = await readProjectSecrets(projectDir);
   return new Redactor({ knownSecretValues: secretValues });
+}
+
+/** Plain-language description of one recorded change, for evidence summaries. */
+function describeChange(event: PackageEventV1): string {
+  switch (event.kind) {
+    case "installed":
+      return `was installed at ${event.toVersion ?? "an unrecorded version"}`;
+    case "removed":
+      return `was removed from ${event.fromVersion ?? "an unrecorded version"}`;
+    case "downgraded":
+      return `was downgraded from ${event.fromVersion} to ${event.toVersion}`;
+    default:
+      return `was upgraded from ${event.fromVersion} to ${event.toVersion}`;
+  }
+}
+
+/**
+ * Turn recorded changes into observed effects an adapter's compiler understands.
+ *
+ * A downgrade matters as much as an install here: if the working checkout had
+ * to move a package *back*, a teammate who installs the latest version gets a
+ * broken environment, and that is precisely the case a snapshot cannot express.
+ * A package that was installed and later removed produces both events, and the
+ * remove is applied last, so it does not end up in the contract.
+ */
+function effectsFromLog(
+  manager: string,
+  events: readonly PackageEventV1[],
+): ObservedEffect[] {
+  const latest = new Map<string, PackageEventV1>();
+  for (const event of events) {
+    const existing = latest.get(event.name);
+    if (!existing || event.seq > existing.seq) latest.set(event.name, event);
+  }
+
+  const added: { name: string; versionSpec: string }[] = [];
+  const removed: { name: string; versionSpec: string }[] = [];
+  for (const event of latest.values()) {
+    if (event.kind === "removed") {
+      removed.push({ name: event.name, versionSpec: event.fromVersion ?? "*" });
+      continue;
+    }
+    if (event.toVersion === null) continue;
+    added.push({ name: event.name, versionSpec: event.toVersion });
+  }
+
+  const effects: ObservedEffect[] = [];
+  if (added.length > 0) {
+    effects.push({
+      adapterId: events[0]?.adapterId ?? manager,
+      kind: "package_added",
+      manager,
+      packages: added,
+      // A recorded before-and-after, not an inference from directory shape.
+      confidence: "high",
+      summary: `${added.length} package(s) were installed or changed here while this revision was checked out.`,
+    });
+  }
+  if (removed.length > 0) {
+    effects.push({
+      adapterId: events[0]?.adapterId ?? manager,
+      kind: "package_removed",
+      manager,
+      packages: removed,
+      confidence: "high",
+      summary: `${removed.length} package(s) were removed here while this revision was checked out.`,
+    });
+  }
+  return effects;
 }

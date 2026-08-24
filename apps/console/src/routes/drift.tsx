@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type DriftView, type Overview } from "../api.ts";
-import { Button, Card, Empty, Loading, Mono, Notice, relativeTime } from "../components/primitives.tsx";
+import {
+  Button,
+  Card,
+  Empty,
+  Loading,
+  Mono,
+  Notice,
+  preferredDevice,
+  relativeTime,
+} from "../components/primitives.tsx";
 
 /**
  * Drift is the gap between what the repository declares and what a capture
@@ -11,10 +20,12 @@ export function DriftRoute({
   projectId,
   overview,
   onChanged,
+  localDeviceId,
 }: {
   projectId: string | null;
   overview: Overview | null;
   onChanged: () => Promise<void>;
+  localDeviceId?: string | null;
 }) {
   const [view, setView] = useState<DriftView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +47,7 @@ export function DriftRoute({
     };
   }, [projectId]);
 
-  const device = overview?.devices.find((entry) => entry.state === "active") ?? null;
+  const device = preferredDevice(overview?.devices ?? [], localDeviceId);
 
   const askPromote = async () => {
     if (!projectId || !device) return;

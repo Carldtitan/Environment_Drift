@@ -59,6 +59,7 @@ export const BLOCKER_LABELS: Readonly<Record<BlockerCode, string>> = {
   proof_not_configured: "No proof command configured",
   interrupted: "Run interrupted",
   request_expired: "Request expired",
+  invalid_input: "That input could not be read",
   integration_unavailable: "Integration unavailable",
   worktree_dirty: "Worktree has uncommitted changes",
   internal_error: "Internal error",

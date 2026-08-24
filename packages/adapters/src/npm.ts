@@ -237,10 +237,12 @@ export class NpmAdapter implements EnvironmentAdapter {
     }
 
     let lockfile: string | null = null;
+    let lockedVersions: Record<string, string> = {};
     for (const candidate of LOCKFILES) {
       if (await ctx.files.exists(candidate)) {
         lockfile = candidate;
         declaredFiles.push(candidate);
+        lockedVersions = parseLockedVersions(await ctx.files.read(candidate));
         break;
       }
     }
@@ -259,7 +261,16 @@ export class NpmAdapter implements EnvironmentAdapter {
       installHint: "npm ships with Node.js. Install a Node runtime that matches the contract.",
     });
 
-    return { adapterId: ADAPTER_ID, files: declaredFiles, runtimes, packages, systemTools, secrets, gaps };
+    return {
+      adapterId: ADAPTER_ID,
+      files: declaredFiles,
+      runtimes,
+      packages,
+      systemTools,
+      secrets,
+      gaps,
+      lockedVersions,
+    };
   }
 
   async inventory(ctx: AdapterContext): Promise<InventoryResult> {
@@ -453,6 +464,59 @@ export class NpmAdapter implements EnvironmentAdapter {
       }
     }
 
+    // A package the repository *does* declare, sitting at a version the
+    // repository would not install. This is what `npm install --no-save x@old`
+    // leaves behind, and it is the case a plain snapshot of "what is declared"
+    // misses completely: the teammate's `npm ci` gives them the locked version,
+    // this machine runs something else, and only one of them works.
+    //
+    // The comparison is against the lockfile, never the version range. A range
+    // is satisfied by many versions, so comparing against it would report
+    // healthy projects as broken.
+    const locked = declared.lockedVersions ?? {};
+    for (const [name, installedVersion] of installed) {
+      if (!declaredNames.has(name)) continue;
+      const lockedVersion = locked[name];
+      if (lockedVersion === undefined || lockedVersion === installedVersion) continue;
+      if (overlay.some((entry) => entry.name === name)) continue;
+
+      const versionSpec = pinExact(installedVersion);
+      const evidenceRefs = bundle.evidence
+        .filter((item) => item.summary.includes(name))
+        .map((item) => item.id);
+
+      overlay.push({ name, versionSpec, evidenceRefs });
+
+      // Replace the declared requirement rather than adding a second one for
+      // the same package. A contract that listed both would be asking for two
+      // different versions of one thing.
+      const existing = packages.findIndex((entry) => entry.name === name);
+      const requirement = {
+        ecosystem: "node" as const,
+        manager: "npm",
+        name,
+        versionSpec,
+        scope: "direct" as const,
+        source: "observed" as const,
+        evidenceRefs,
+        // It *is* declared - just not at this version. Saying otherwise would
+        // send a promotion down the wrong path.
+        declared: true,
+      };
+      if (existing === -1) packages.push(requirement);
+      else packages[existing] = requirement;
+      drift.push({
+        adapterId: ADAPTER_ID,
+        kind: "version_mismatch",
+        summary: `${name} is installed here at ${installedVersion}, but the lockfile pins ${lockedVersion}. A fresh install elsewhere would produce ${lockedVersion}.`,
+        evidenceRefs,
+        affectedDeclaration: LOCKFILES[0],
+        // Rewriting the lockfile by hand would produce one npm cannot verify.
+        // The honest repair is to run the install and commit what npm writes.
+        proposedRepair: null,
+      });
+    }
+
     const runtimes: RuntimeRequirement[] = [...declared.runtimes];
     if (runtimes.length === 0) {
       const observedNode = bundle.evidence.find(
@@ -522,9 +586,15 @@ export class NpmAdapter implements EnvironmentAdapter {
         adapterId: ADAPTER_ID,
         workDir: ".",
         idempotencyKey: `npm-overlay-${digestOf(overlay).slice(7, 27)}`,
-        description: `Install ${overlay.length} package${
+        // The overlay now carries two different situations - a package the
+        // repository never declares, and one it declares at another version -
+        // so the description names what is actually being installed rather
+        // than asserting one cause for both.
+        description: `Install ${overlay.length} package version${
           overlay.length === 1 ? "" : "s"
-        } the evidence shows were used but the repository does not declare. package.json is not modified.`,
+        } this machine ran that a fresh install would not produce: ${overlay
+          .map((entry) => `${entry.name}@${entry.versionSpec}`)
+          .join(", ")}. package.json is not modified.`,
         manager: "npm",
         packages: overlay.map((entry) => ({
           name: entry.name,
@@ -604,8 +674,10 @@ export class NpmAdapter implements EnvironmentAdapter {
     if (step.kind === "install_project_dependencies") {
       return {
         // `ci` installs exactly the lockfile and refuses to update it, which is
-        // what a rescue needs. Without a lockfile there is nothing to freeze.
-        argv: step.frozen ? ["npm", "ci"] : ["npm", "install"],
+        // what a rescue needs. Without a lockfile there is nothing to freeze -
+        // and `--no-package-lock` stops the install from leaving one behind, so
+        // a rescue does not add a file the repository chose not to keep.
+        argv: step.frozen ? ["npm", "ci"] : ["npm", "install", "--no-package-lock"],
         workDir: step.workDir,
         env: { npm_config_cache: cacheDir, npm_config_fund: "false", npm_config_audit: "false" },
         timeoutMs: step.timeoutMs,
@@ -614,11 +686,14 @@ export class NpmAdapter implements EnvironmentAdapter {
     }
     if (step.kind === "apply_package_overlay") {
       return {
-        // `--no-save` is what keeps rescue from editing a tracked file.
+        // `--no-save` is what keeps rescue from editing a tracked file: it
+        // leaves both package.json and the lockfile alone. `--no-package-lock`
+        // additionally stops one being created where none exists.
         argv: [
           "npm",
           "install",
           "--no-save",
+          "--no-package-lock",
           ...step.packages.map((pkg) => `${pkg.name}@${pkg.versionSpec}`),
         ],
         workDir: step.workDir,
@@ -743,3 +818,65 @@ export function parseSpecifier(token: string): { name: string; versionSpec: stri
 }
 
 export const npmAdapter = new NpmAdapter();
+
+/**
+ * Exact top-level versions from an npm lockfile.
+ *
+ * This is what `npm ci` would put on another machine, which is the only fair
+ * thing to compare an installed tree against. Both lockfile layouts are read:
+ * v2 and v3 key a `packages` map by path, v1 nests a `dependencies` tree.
+ * Nested paths (`node_modules/a/node_modules/b`) are skipped, because the
+ * inventory that this is compared with reads the top level only.
+ *
+ * A lockfile that cannot be parsed yields nothing rather than a guess: an
+ * empty result disables the comparison, which is the safe direction.
+ */
+export function parseLockedVersions(raw: string | null): Record<string, string> {
+  if (raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const document = parsed as { packages?: unknown; dependencies?: unknown };
+  const versions: Record<string, string> = {};
+
+  if (typeof document.packages === "object" && document.packages !== null) {
+    const entries = document.packages as Record<string, unknown>;
+    for (const [path, entry] of Object.entries(entries)) {
+      if (!path.startsWith("node_modules/")) continue;
+      const name = path.slice("node_modules/".length);
+      if (name.includes("/node_modules/")) continue;
+      if (typeof entry !== "object" || entry === null) continue;
+
+      const record = entry as { version?: unknown; link?: unknown; resolved?: unknown };
+      let version = record.version;
+
+      // A `file:` or workspace dependency is recorded as a link, and its
+      // version lives at the target path. These are common in monorepos, and
+      // replacing the link with a real directory is a genuine mismatch worth
+      // reporting - so the link is followed rather than skipped.
+      if (record.link === true && typeof record.resolved === "string") {
+        const target = entries[record.resolved];
+        if (typeof target === "object" && target !== null) {
+          version = (target as { version?: unknown }).version;
+        }
+      }
+
+      if (typeof version === "string" && version.length > 0) versions[name] = version;
+    }
+  }
+
+  // v1 lockfiles, still produced by npm 6 and still committed in real repos.
+  if (Object.keys(versions).length === 0 && typeof document.dependencies === "object" && document.dependencies !== null) {
+    for (const [name, entry] of Object.entries(document.dependencies as Record<string, unknown>)) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const version = (entry as { version?: unknown }).version;
+      if (typeof version === "string" && version.length > 0) versions[name] = version;
+    }
+  }
+
+  return versions;
+}

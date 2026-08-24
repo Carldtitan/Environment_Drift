@@ -65,13 +65,13 @@ await writeFile(
   `${JSON.stringify(
     {
       name: "iwomc",
-      version: "0.1.3",
-      description: "Rescue a teammate's broken checkout from a verified environment contract.",
+      version: "0.1.6",
+      description: "It Works On My Computer - find out why a teammate's checkout fails, and fix it.",
       type: "module",
       bin: { iwomc: "./bin/iwomc.js" },
       scripts: { postinstall: "node ./scripts/postinstall.mjs" },
       engines: { node: ">=22.5.0" },
-      files: ["bin", "apps", "node_modules", "scripts", "README.md"],
+      files: ["bin", "apps", "node_modules", "scripts", "README.md", "LICENSE"],
       dependencies: Object.fromEntries(internal.map((name) => [`@iwomc/${name}`, "0.1.0"])),
       bundledDependencies: internal.map((name) => `@iwomc/${name}`),
       license: "MIT",
@@ -86,34 +86,89 @@ await writeFile(
 
 await writeFile(
   join(release, "README.md"),
-  `# IWOMC Rescue
-
-IWOMC makes a teammate's broken checkout runnable from a verified environment contract.
-
-## Install
-
-\`\`\`bash
-npm install -g iwomc
-\`\`\`
-
-## Use
-
-In a checkout that already works:
-
-\`\`\`bash
-iwomc init --proof "npm test"
-iwomc capture
-iwomc verify
-\`\`\`
-
-In a teammate's broken checkout:
-
-\`\`\`bash
-iwomc rescue --approve
-\`\`\`
-
-Open the hosted team console at https://iwomc-web-production.up.railway.app.
-`,
+  [
+    "# IWOMC",
+    "",
+    "**It Works On My Computer.** IWOMC finds out why, and fixes it.",
+    "",
+    "Your teammate clones the commit you just pushed. Your app runs. Theirs does not.",
+    "Usually the difference is not in the code - it is on your disk. A package that got",
+    "installed but never added to `package.json`. A version that had to be rolled back.",
+    "A virtual environment set up by hand weeks ago.",
+    "",
+    "IWOMC records what your machine actually has, ties it to the exact Git commit, and",
+    "uses that to make the other machine work - then proves it by running your own test",
+    "command. It says `working` only when that command passes.",
+    "",
+    "## Install",
+    "",
+    "```bash",
+    "npm install -g iwomc",
+    "```",
+    "",
+    "Node.js 22.5 or newer. No Docker, no account, no server.",
+    "",
+    "## Use it",
+    "",
+    "On the checkout that works:",
+    "",
+    "```bash",
+    'iwomc init --proof "npm test"',
+    "iwomc capture",
+    "iwomc verify",
+    "```",
+    "",
+    "On the checkout that is broken:",
+    "",
+    "```bash",
+    "iwomc rescue --approve",
+    "```",
+    "",
+    "Then, so nobody hits it again:",
+    "",
+    "```bash",
+    "iwomc promote          # show an ordinary diff that fixes the repository",
+    "iwomc promote --apply",
+    "```",
+    "",
+    "## Keep a history",
+    "",
+    "A contract describes one commit. To answer *what was installed at 2pm last Tuesday*",
+    "- or to catch a downgrade, which a snapshot cannot express - leave the recorder on:",
+    "",
+    "```bash",
+    "iwomc watch                               # or --all for every registered project",
+    "iwomc timeline <commit>                   # what was installed at that commit",
+    "iwomc diff <their-commit> <your-commit>   # what is different between the two",
+    "```",
+    "",
+    "It reads your project's package folders and nothing else: it never runs a package",
+    "manager, never looks outside the projects you registered, never edits a tracked",
+    "file, and never uploads your history.",
+    "",
+    "## For coding agents",
+    "",
+    "`iwomc mcp` exposes the same workflow as typed MCP tools. Anything that changes",
+    "your machine refuses to run without explicit confirmation. Run `iwomc agent-docs`",
+    "for the full reference offline.",
+    "",
+    "## Supported today",
+    "",
+    "npm, pip, and uv are fully supported: detected, recorded, repaired, and verified.",
+    "About 25 further package managers are recognised and reported honestly as not yet",
+    "repairable, rather than claimed as supported.",
+    "",
+    "## More",
+    "",
+    "Source, documentation, and issues: https://github.com/Carldtitan/Environment_Drift",
+    "",
+    "MIT licensed.",
+    "",
+  ].join("\n"),
 );
+
+// A published package that claims MIT in its metadata must carry the licence
+// text alongside it.
+await cp(join(root, "LICENSE"), join(release, "LICENSE"));
 
 console.log(`npm package staged at ${release}`);

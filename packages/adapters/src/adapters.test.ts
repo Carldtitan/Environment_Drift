@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { defaultRegistry, ECOSYSTEM_PROBES, recognizeEcosystems } from "./registry.js";
-import { npmAdapter, parseSpecifier } from "./npm.js";
-import { pipAdapter, uvAdapter, normalizePythonName, parseRequirementLine } from "./python.js";
+import { npmAdapter, parseSpecifier, parseLockedVersions } from "./npm.js";
+import {
+  pipAdapter,
+  uvAdapter,
+  normalizePythonName,
+  parseRequirementLine,
+  exactPins,
+} from "./python.js";
 import { genericAdapter, buildReviewedRecipeStep } from "./generic.js";
 import { parseToml, tomlString, tomlStringArray } from "./toml.js";
 import { satisfies, parseVersion, compareVersions } from "./semver.js";
@@ -349,3 +355,63 @@ function materializationContext() {
     availableSecretNames: [],
   };
 }
+
+describe("noticing a version the repository would not install", () => {
+  it("reads exact versions from both npm lockfile layouts", () => {
+    // npm 7+ keys a `packages` map by path.
+    expect(
+      parseLockedVersions(
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            "": { dependencies: { left: "^1.0.0" } },
+            "node_modules/left": { version: "1.4.2" },
+            // Nested copies are a different package instance; the inventory
+            // this is compared against reads the top level only.
+            "node_modules/left/node_modules/deep": { version: "9.9.9" },
+          },
+        }),
+      ),
+    ).toEqual({ left: "1.4.2" });
+
+    // A `file:` or workspace dependency is recorded as a link whose version
+    // lives at the target path. Monorepos are full of these.
+    expect(
+      parseLockedVersions(
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            "": { dependencies: { vend: "file:./vendor/vend" } },
+            "node_modules/vend": { resolved: "vendor/vend", link: true },
+            "vendor/vend": { version: "1.0.0" },
+          },
+        }),
+      ),
+    ).toEqual({ vend: "1.0.0" });
+
+    // npm 6 nests a `dependencies` tree, and those lockfiles are still in
+    // real repositories.
+    expect(
+      parseLockedVersions(JSON.stringify({ lockfileVersion: 1, dependencies: { old: { version: "0.3.1" } } })),
+    ).toEqual({ old: "0.3.1" });
+  });
+
+  it("reads nothing from a lockfile it cannot parse, rather than guessing", () => {
+    // An empty result disables the comparison, which is the safe direction:
+    // no drift reported beats drift invented.
+    expect(parseLockedVersions("{ this is not json")).toEqual({});
+    expect(parseLockedVersions(null)).toEqual({});
+    expect(parseLockedVersions("[]")).toEqual({});
+  });
+
+  it("treats a Python exact pin as a lock, and a range as no lock at all", () => {
+    expect(
+      exactPins([
+        { name: "pinned", versionSpec: "==2.1.0" },
+        { name: "ranged", versionSpec: ">=1.0" },
+        { name: "unbounded", versionSpec: "*" },
+        { name: "spaced", versionSpec: "== 3.4.5" },
+      ]),
+    ).toEqual({ pinned: "2.1.0", spaced: "3.4.5" });
+  });
+});

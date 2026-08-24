@@ -329,6 +329,132 @@ export interface InventorySnapshot {
   readonly entries: readonly { readonly name: string; readonly version: string }[];
 }
 
+// ---------------------------------------------------------------------------
+// The package event log
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to one package.
+ *
+ * A snapshot cannot express `downgraded`, and a downgrade is often the fix a
+ * teammate needs to reproduce. That is the reason this log exists.
+ */
+export type PackageEventKind = "installed" | "upgraded" | "downgraded" | "removed";
+
+/**
+ * How IWOMC came to know about an event, in descending order of precision.
+ *
+ * `watched`  - a filesystem change fired and an inventory diff confirmed it.
+ * `swept`    - a periodic inventory diff found it; the change happened somewhere
+ *              inside the observation window.
+ * `imported` - reconstructed from a receipt captured before watching began.
+ */
+export type PackageEventSource = "watched" | "swept" | "imported";
+
+/**
+ * The process IWOMC believes caused an event.
+ *
+ * Correlation is by time window, working directory, and process ancestry. It is
+ * evidence, not proof, so it carries its own confidence and is never required
+ * for the event itself to be trusted.
+ */
+export interface ObservedCause {
+  readonly argv: readonly string[];
+  readonly pid: number;
+  readonly startedAt?: string;
+  readonly confidence: "high" | "medium" | "low";
+  readonly agentSession?: {
+    readonly provider: string;
+    readonly sessionRef: string;
+  };
+}
+
+export interface PackageEventV1 {
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly projectId: string;
+  /** Monotonic per project, so a replay is deterministic. */
+  readonly seq: number;
+
+  /** When IWOMC recorded the event. */
+  readonly at: string;
+  /**
+   * The window the change actually happened in. A watched event has a narrow
+   * window; a swept event's window is the whole sweep interval. Never claim
+   * more precision than the observation method provides.
+   */
+  readonly window: { readonly from: string; readonly to: string };
+
+  readonly ecosystem: string;
+  readonly manager: string;
+  readonly adapterId: string;
+  readonly name: string;
+  /** Previous version; null when the package was newly installed. */
+  readonly fromVersion: string | null;
+  /** New version; null when the package was removed. */
+  readonly toVersion: string | null;
+  readonly kind: PackageEventKind;
+
+  /**
+   * HEAD at the moment of observation. This, not the timestamp, is the primary
+   * key for "what did this machine look like at their commit" - a clock can be
+   * wrong or skewed between machines, a revision cannot.
+   */
+  readonly commit: string | null;
+  readonly branch: string | null;
+  readonly worktreeDirty: boolean;
+
+  readonly source: PackageEventSource;
+  readonly cause?: ObservedCause;
+}
+
+/**
+ * A full inventory written into the log periodically.
+ *
+ * Replaying every event since the beginning of a project would get slower
+ * forever. A baseline is the fold up to one point, so a point-in-time query
+ * only has to replay events after the most recent one.
+ */
+export interface InventoryBaselineV1 {
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly projectId: string;
+  readonly seq: number;
+  readonly at: string;
+  readonly commit: string | null;
+  readonly entries: readonly {
+    readonly ecosystem: string;
+    readonly manager: string;
+    readonly adapterId: string;
+    readonly name: string;
+    readonly version: string;
+  }[];
+  readonly digest: string;
+}
+
+/** The reconstructed state of a project's packages at one point. */
+export interface PointInTimeState {
+  /** The instant, revision, or event sequence the fold was taken at. */
+  readonly at: string;
+  readonly commit: string | null;
+  readonly packages: readonly {
+    readonly ecosystem: string;
+    readonly manager: string;
+    readonly adapterId: string;
+    readonly name: string;
+    readonly version: string;
+    /** When this exact version arrived, if the log knows. */
+    readonly since?: string;
+  }[];
+  /** Events replayed after the baseline to produce this state. */
+  readonly replayedEvents: number;
+  /**
+   * What this fold cannot account for: time before watching began, gaps while
+   * the watcher was not running, or ecosystems with no inventory strategy.
+   */
+  readonly coverage: readonly CoverageGap[];
+}
+
 export interface ProofAttempt {
   readonly proofId: string;
   readonly exitCode: number | null;
@@ -572,7 +698,13 @@ export interface DriftFinding {
   readonly projectId: string;
   readonly commit: string;
   readonly adapterId: string;
-  readonly kind: "undeclared_package" | "runtime_pin_missing" | "missing_declaration_file" | "declared_not_installed";
+  readonly kind:
+    | "undeclared_package"
+    | "runtime_pin_missing"
+    | "missing_declaration_file"
+    | "declared_not_installed"
+    /** Installed here at a version the repository would not install. */
+    | "version_mismatch";
   readonly summary: string;
   readonly evidenceRefs: readonly string[];
   readonly affectedDeclaration: string;

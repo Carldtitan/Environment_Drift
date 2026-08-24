@@ -5,6 +5,8 @@ import { signPayload, verifyPayload, type KeyPair, type Signature } from "./cryp
 import { assertRedacted, Redactor, RedactionError } from "./redaction.js";
 import type {
   EnvironmentContractV1,
+  InventoryBaselineV1,
+  PackageEventV1,
   EnvironmentReceiptV1,
   MaterializationStep,
   ProofCommand,
@@ -63,6 +65,14 @@ export function parseRescueOutcome(value: unknown): RescueOutcomeV1 {
 
 export function parseVerificationAttestation(value: unknown): VerificationAttestationV1 {
   return validatorFor("verification-attestation-v1").parse<VerificationAttestationV1>(value);
+}
+
+export function parsePackageEvent(value: unknown): PackageEventV1 {
+  return validatorFor("package-event-v1").parse<PackageEventV1>(value);
+}
+
+export function parseInventoryBaseline(value: unknown): InventoryBaselineV1 {
+  return validatorFor("inventory-baseline-v1").parse<InventoryBaselineV1>(value);
 }
 
 // ---------------------------------------------------------------------------

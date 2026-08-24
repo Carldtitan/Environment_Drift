@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { api, ApiError, type Overview } from "../api.ts";
-import { Button, Empty, Loading, Notice } from "../components/primitives.tsx";
+import { Button, Empty, Loading, Notice, preferredDevice } from "../components/primitives.tsx";
 import { ContractDocument } from "../components/contract-document.tsx";
+import { summarizeAgreement, TeamAgreement } from "../components/team-agreement.tsx";
 
 export function ContractsRoute({
   overview,
   onChanged,
+  localDeviceId,
 }: {
   overview: Overview | null;
   onChanged: () => Promise<void>;
+  localDeviceId?: string | null;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +19,7 @@ export function ContractsRoute({
 
   if (overview === null) return <Loading label="Reading contracts" rows={4} />;
 
-  const device = overview.devices.find((entry) => entry.state === "active") ?? null;
+  const device = preferredDevice(overview.devices, localDeviceId);
   const projectId = overview.selectedProjectId;
 
   if (overview.contracts.length === 0) {
@@ -54,10 +57,17 @@ export function ContractsRoute({
     }
   };
 
+  // The revision the team is working on right now, if a checkout on this
+  // machine says so; otherwise the newest published capture.
+  const currentCommit =
+    overview.local?.project?.commit ?? overview.contracts[0]?.contract.source.commit ?? "";
+  const agreement = summarizeAgreement(overview.contracts, currentCommit);
+
   return (
     <div className="stack">
       {sent ? <Notice tone="ready">{sent}</Notice> : null}
       {error ? <Notice tone="danger">{error}</Notice> : null}
+      {agreement ? <TeamAgreement agreement={agreement} devices={overview.devices} /> : null}
       {overview.contracts.map((entry) => (
         <ContractDocument
           key={entry.contract.id}
@@ -68,7 +78,7 @@ export function ContractsRoute({
               busy={busy === entry.contract.id}
               disabled={!device}
               onClick={() => void verify(entry.contract.id)}
-              title={device ? "Ask a device to verify this contract" : "No active device to ask"}
+              title={device ? `Ask ${device.displayName} to verify this contract` : "No active device to ask"}
             >
               Verify contract
             </Button>

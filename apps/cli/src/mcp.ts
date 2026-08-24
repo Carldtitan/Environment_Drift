@@ -63,7 +63,7 @@ export const MCP_TOOLS: readonly ToolDefinition[] = [
     name: "environment_status",
     title: "Environment status",
     description:
-      "Read-only. Answers whether this checkout can be rescued now, which contract applies to the exact revision, the truthful ecosystem support level, the configured proof command, and which integrations are actually connected. Fails only when the directory is not a Git checkout. Changes nothing.",
+      "Read-only. Answers whether this checkout can be rescued now, which contract applies to the exact revision, the truthful ecosystem support level, the configured proof command, and which integrations are actually connected. When several teammates captured the same revision, `agreement` reports where their machines differ - and is null when fewer than two captures are comparable, which means 'nothing to compare', not 'they agree'. Fails only when the directory is not a Git checkout. Changes nothing.",
     inputSchema: {
       type: "object",
       properties: { dir: DIR_PROPERTY },
@@ -240,6 +240,103 @@ export const MCP_TOOLS: readonly ToolDefinition[] = [
           ? "The listed files were written. Review with `git diff` before committing."
           : "Nothing was written. Call again with confirm: true to apply exactly this diff.",
       };
+    },
+  },
+  {
+    name: "record_package_observation",
+    title: "Record what is installed right now",
+    description:
+      "Takes one observation of the project's installed packages and appends any install, upgrade, downgrade, or removal since the last observation to the local package log. Reads project-local package directories only; it runs no package manager and looks at no other project. Changes no repository file. Call this after you install or change a dependency so the timeline records when it happened.",
+    inputSchema: {
+      type: "object",
+      properties: { dir: DIR_PROPERTY },
+      additionalProperties: false,
+    },
+    mutating: false,
+    handler: async (companion, args) => {
+      const { result } = await companion.sweepOnce(dirOf(args));
+      return {
+        at: result.at,
+        commit: result.commit,
+        installedPackages: result.packageCount,
+        changes: result.events.map((event) => ({
+          name: event.name,
+          manager: event.manager,
+          kind: event.kind,
+          fromVersion: event.fromVersion,
+          toVersion: event.toVersion,
+          window: event.window,
+        })),
+        unavailable: result.unavailable,
+      };
+    },
+  },
+  {
+    name: "package_timeline",
+    title: "What was installed at a moment or a revision",
+    description:
+      "Read-only. Replays the local package log to answer what versions were installed at an instant, or while a given Git revision was checked out. The package state is deterministic and comes only from IWOMC's own log; durable memory is queried separately and returned under `memory` as narration, never as environment truth. When a revision was never observed on this device it says so instead of estimating from a nearby one, and every answer lists the periods it could not see.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dir: DIR_PROPERTY,
+        at: { type: "string", description: "ISO instant. Defaults to now." },
+        commit: { type: "string", description: "Exact Git revision. Takes precedence over `at`." },
+        explain: {
+          type: "boolean",
+          description: "Set false to skip the durable-memory lookup entirely. Defaults to true.",
+        },
+      },
+      additionalProperties: false,
+    },
+    mutating: false,
+    handler: async (companion, args) => {
+      const at = args["at"];
+      const commit = args["commit"];
+      return await companion.timeline(dirOf(args), {
+        ...(typeof at === "string" ? { at } : {}),
+        ...(typeof commit === "string" ? { commit } : {}),
+        explain: args["explain"] !== false,
+      });
+    },
+  },
+  {
+    name: "package_timeline_diff",
+    title: "What changed between two points",
+    description:
+      "Read-only. Reports the installs, upgrades, downgrades, and removals that separate two revisions, or two instants. Both sides must be the same kind. Returns `missing` instead of a diff when a requested revision was never observed on this device.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dir: DIR_PROPERTY,
+        fromCommit: { type: "string", description: "Starting revision." },
+        toCommit: { type: "string", description: "Ending revision." },
+        since: { type: "string", description: "Starting ISO instant, for a time comparison." },
+        until: { type: "string", description: "Ending ISO instant. Defaults to now." },
+      },
+      additionalProperties: false,
+    },
+    mutating: false,
+    handler: async (companion, args) => {
+      const fromCommit = args["fromCommit"];
+      const toCommit = args["toCommit"];
+      const since = args["since"];
+      const until = args["until"];
+      if (typeof fromCommit === "string" && typeof toCommit === "string") {
+        return await companion.timelineDiff(dirOf(args), { commit: fromCommit }, { commit: toCommit });
+      }
+      if (typeof since === "string") {
+        return await companion.timelineDiff(
+          dirOf(args),
+          { at: since },
+          typeof until === "string" ? { at: until } : {},
+        );
+      }
+      // A malformed call is a caller error, not an environment blocker: it has
+      // no next action a person could take on the machine.
+      throw new Error(
+        "A comparison needs two points of the same kind: pass fromCommit and toCommit, or since (and optionally until).",
+      );
     },
   },
 ];

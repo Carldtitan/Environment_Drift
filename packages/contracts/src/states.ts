@@ -140,6 +140,8 @@ export const BLOCKER_CODES = [
   "proof_not_configured",
   "interrupted",
   "request_expired",
+  /** What was asked for cannot be interpreted - a date that is not a date. */
+  "invalid_input",
   "integration_unavailable",
   "worktree_dirty",
   "internal_error",

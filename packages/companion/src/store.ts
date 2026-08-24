@@ -15,6 +15,8 @@ import type {
   DriftFinding,
   EnvironmentContractV1,
   EnvironmentReceiptV1,
+  InventoryBaselineV1,
+  PackageEventV1,
   ProofCommand,
   RescueEvent,
   RescueOutcomeV1,
@@ -54,11 +56,27 @@ export interface StoredContract {
   readonly createdAt: string;
 }
 
+/**
+ * One period during which the watcher was running.
+ *
+ * `endedAt` is null for a session that was never stopped: either it is running
+ * now, or the process was killed. `lastSeenAt` separates those two cases,
+ * which is what stops a crashed watcher from claiming coverage forever.
+ */
+export interface WatchSessionRecord {
+  readonly startedAt: string;
+  readonly lastSeenAt: string;
+  readonly sweepIntervalMs: number;
+  readonly endedAt: string | null;
+}
+
 export interface StoredRun {
   readonly id: string;
   readonly projectId: string;
   readonly contractId: string;
   readonly commit: string;
+  /** The directory this run worked in. Empty for runs recorded before it was tracked. */
+  readonly checkoutPath?: string;
   readonly state: RescueRunState;
   readonly startedAt: string;
   readonly endedAt: string | null;
@@ -144,6 +162,10 @@ CREATE TABLE IF NOT EXISTS runs (
   project_id TEXT NOT NULL,
   contract_id TEXT NOT NULL,
   commit_sha TEXT NOT NULL,
+  -- Which directory the run actually worked in. A resume may only reuse work
+  -- done in the same one: two checkouts of a project can exist side by side,
+  -- and steps applied to one are not applied to the other.
+  checkout_path TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT,
@@ -201,6 +223,54 @@ CREATE TABLE IF NOT EXISTS audit (
   digest TEXT NOT NULL,
   seq INTEGER
 );
+-- Every append reads the newest row to chain onto it, and reads the highest
+-- sequence to allocate the next one. Without this index both are full scans,
+-- so writing n events costs O(n^2) - a team fills this table fast enough for
+-- that to become the slowest thing IWOMC does.
+CREATE INDEX IF NOT EXISTS audit_seq ON audit (seq);
+
+CREATE TABLE IF NOT EXISTS package_events (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  commit_sha TEXT,
+  name TEXT NOT NULL,
+  manager TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_sealed TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS package_events_seq ON package_events (project_id, seq);
+CREATE INDEX IF NOT EXISTS package_events_time ON package_events (project_id, at);
+CREATE INDEX IF NOT EXISTS package_events_commit ON package_events (project_id, commit_sha);
+CREATE INDEX IF NOT EXISTS package_events_name ON package_events (project_id, manager, name, seq);
+
+CREATE TABLE IF NOT EXISTS inventory_baselines (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  commit_sha TEXT,
+  payload_sealed TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inventory_baselines_seq ON inventory_baselines (project_id, seq);
+
+CREATE TABLE IF NOT EXISTS watch_sessions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  -- Updated after every sweep. A watcher that is killed rather than stopped
+  -- never writes ended_at, and without a heartbeat its session would claim
+  -- coverage forever.
+  last_seen_at TEXT NOT NULL,
+  sweep_interval_ms INTEGER NOT NULL,
+  -- The process doing the recording. Lets a dead recorder be replaced at once
+  -- instead of after its heartbeat grace expires.
+  recorder_pid INTEGER NOT NULL DEFAULT 0,
+  ended_at TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS watch_sessions_project ON watch_sessions (project_id, started_at);
 
 CREATE TABLE IF NOT EXISTS budget_ledger (
   id TEXT PRIMARY KEY,
@@ -229,6 +299,62 @@ function loadOrCreateKey(path: string): Buffer {
   return key;
 }
 
+/**
+ * Columns added to a table after it first shipped.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is a no-op on an existing database, so a new
+ * column has to be added explicitly or an upgraded IWOMC crashes on the store
+ * it wrote yesterday. Each entry is idempotent: adding a column that is
+ * already there is skipped, not an error.
+ */
+const ADDED_COLUMNS: readonly { table: string; column: string; definition: string }[] = [
+  { table: "watch_sessions", column: "last_seen_at", definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: "watch_sessions", column: "sweep_interval_ms", definition: "INTEGER NOT NULL DEFAULT 45000" },
+  { table: "watch_sessions", column: "recorder_pid", definition: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "runs", column: "checkout_path", definition: "TEXT NOT NULL DEFAULT ''" },
+];
+
+function applyAdditiveMigrations(db: DatabaseSync): void {
+  for (const { table, column, definition } of ADDED_COLUMNS) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (columns.length === 0) continue;
+    if (columns.some((existing) => existing.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+/**
+ * Whether a process id is still running.
+ *
+ * Signal 0 performs the permission and existence checks without delivering
+ * anything. `EPERM` means it exists but belongs to someone else, which for
+ * this purpose counts as alive.
+ */
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function isBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /busy|locked/iu.test(message);
+}
+
+/**
+ * Block for a few milliseconds without spinning the CPU.
+ *
+ * `node:sqlite` is synchronous, so there is no promise to await inside a
+ * transaction retry. Atomics.wait on a throwaway buffer is the sanctioned way
+ * to sleep a synchronous path.
+ */
+function sleepBriefly(): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+}
+
 export class CompanionStore {
   readonly #db: DatabaseSync;
   readonly #key: Buffer;
@@ -247,6 +373,7 @@ export class CompanionStore {
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA foreign_keys = ON;");
     db.exec(SCHEMA);
+    applyAdditiveMigrations(db);
     return new CompanionStore(db, key, databasePath);
   }
 
@@ -548,6 +675,22 @@ export class CompanionStore {
     return rows.map((row) => this.#rowToContract(row));
   }
 
+  /**
+   * Contracts for a commit under *any* project on this device.
+   *
+   * Two checkouts of the same code are the same IWOMC project only when they
+   * share a Git remote. A clone of a local folder, or a fork with a different
+   * origin, produces a different project fingerprint - and then "no contract
+   * exists for this commit" is true but points at entirely the wrong problem.
+   * This lets the caller name the real one.
+   */
+  findContractsForCommitAnywhere(commit: string): StoredContract[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM contracts WHERE commit_sha = ? ORDER BY created_at DESC LIMIT 20")
+      .all(commit) as Record<string, string>[];
+    return rows.map((row) => this.#rowToContract(row));
+  }
+
   // -- proof --------------------------------------------------------------
 
   saveProof(projectId: string, proof: ProofCommand, updatedAt: string): void {
@@ -573,14 +716,25 @@ export class CompanionStore {
     projectId: string;
     contractId: string;
     commit: string;
+    /** The directory the run works in, so a resume only reuses its own work. */
+    checkoutPath?: string;
     state: RescueRunState;
     startedAt: string;
   }): void {
     this.#db
       .prepare(
-        `INSERT INTO runs (id, project_id, contract_id, commit_sha, state, started_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, project_id, contract_id, commit_sha, checkout_path, state, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(run.id, run.projectId, run.contractId, run.commit, run.state, run.startedAt);
+      .run(
+        run.id,
+        run.projectId,
+        run.contractId,
+        run.commit,
+        run.checkoutPath ?? "",
+        run.state,
+        run.startedAt,
+      );
   }
 
   updateRunState(runId: string, state: RescueRunState): void {
@@ -662,17 +816,23 @@ export class CompanionStore {
   }
 
   /**
-   * Idempotency keys already recorded as succeeded for this project+contract,
-   * so an interrupted rescue can resume instead of repeating work (R7.4).
+   * Idempotency keys already recorded as succeeded, so an interrupted rescue
+   * can resume instead of repeating work (R7.4).
+   *
+   * Scoped to the directory as well as the project and contract. Two checkouts
+   * of one project can sit side by side on a machine, and work applied to one
+   * of them has plainly not been applied to the other - without this, the
+   * second rescue skips every step and installs nothing.
    */
-  completedIdempotencyKeys(projectId: string, contractId: string): Set<string> {
+  completedIdempotencyKeys(projectId: string, contractId: string, checkoutPath: string): Set<string> {
     const rows = this.#db
       .prepare(
         `SELECT j.idempotency_key AS k FROM journal j
          JOIN runs r ON r.id = j.run_id
-         WHERE r.project_id = ? AND r.contract_id = ? AND j.phase = 'succeeded'`,
+         WHERE r.project_id = ? AND r.contract_id = ? AND r.checkout_path = ?
+           AND j.phase = 'succeeded'`,
       )
-      .all(projectId, contractId) as { k: string }[];
+      .all(projectId, contractId, checkoutPath) as { k: string }[];
     return new Set(rows.map((row) => row.k));
   }
 
@@ -753,6 +913,417 @@ export class CompanionStore {
           .prepare("SELECT id, payload_sealed FROM drift WHERE project_id = ? ORDER BY detected_at DESC")
           .all(projectId) as { id: string; payload_sealed: string }[]);
     return rows.map((row) => this.#open<DriftFinding>(row.payload_sealed, `drift:${row.id}`));
+  }
+
+  // -- the package event log ----------------------------------------------
+
+
+  /** The next sequence number for this project's log. */
+  nextPackageEventSeq(projectId: string): number {
+    const row = this.#db
+      .prepare("SELECT COALESCE(MAX(seq), -1) AS last FROM package_events WHERE project_id = ?")
+      .get(projectId) as { last: number };
+    return Number(row.last) + 1;
+  }
+
+  /**
+   * Append observed changes and return them as they were stored.
+   *
+   * The log is append-only: a correction is a new event, never an edit, so a
+   * replay of the same range always agrees with itself.
+   *
+   * Sequence numbers are assigned *here*, inside a single immediate
+   * transaction, not by the caller. A resident `iwomc watch` and an `iwomc
+   * sweep` in another terminal are both normal, and if each picked its own
+   * "next" number beforehand they would collide on the unique index and one
+   * would crash. Event ids are content-addressed and independent of the
+   * sequence, so the same observation arriving twice is skipped rather than
+   * duplicated or renumbered.
+   *
+   * The caller's `seq` is used only as relative ordering within this batch.
+   */
+  appendPackageEvents(events: readonly PackageEventV1[]): PackageEventV1[] {
+    if (events.length === 0) return [];
+    const ordered = [...events].sort((left, right) => left.seq - right.seq);
+
+    const insert = this.#db.prepare(
+      `INSERT INTO package_events (id, project_id, seq, at, commit_sha, name, manager, kind, payload_sealed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const exists = this.#db.prepare("SELECT 1 AS present FROM package_events WHERE id = ?");
+
+    const stored: PackageEventV1[] = [];
+    this.#inTransaction(() => {
+      stored.length = 0;
+      let next = this.nextPackageEventSeq(ordered[0]?.projectId ?? "");
+      for (const event of ordered) {
+        if (exists.get(event.id) !== undefined) continue;
+        const persisted: PackageEventV1 = { ...event, seq: next };
+        next += 1;
+        insert.run(
+          persisted.id,
+          persisted.projectId,
+          persisted.seq,
+          persisted.at,
+          persisted.commit,
+          persisted.name,
+          persisted.manager,
+          persisted.kind,
+          this.#seal(persisted, `package-event:${persisted.id}`),
+        );
+        stored.push(persisted);
+      }
+    });
+    return stored;
+  }
+
+  /**
+   * Run a write inside one immediate transaction, retrying a busy database.
+   *
+   * Several IWOMC processes share one store file. SQLite in WAL mode allows
+   * concurrent readers with one writer, so a second writer is told to wait
+   * rather than being corrupted - but it is told by throwing, and a background
+   * recorder that gave up on the first contended write would quietly lose
+   * events.
+   */
+  #inTransaction<T>(work: () => T): T {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        this.#db.exec("BEGIN IMMEDIATE");
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+        sleepBriefly();
+        continue;
+      }
+      try {
+        const result = work();
+        this.#db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          this.#db.exec("ROLLBACK");
+        } catch {
+          // The transaction was already rolled back by the failure itself.
+        }
+        if (isBusy(error) && Date.now() < deadline) {
+          sleepBriefly();
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  listPackageEvents(
+    projectId: string,
+    options: { fromSeq?: number; toSeq?: number; limit?: number; name?: string } = {},
+  ): PackageEventV1[] {
+    const from = options.fromSeq ?? 0;
+    const to = options.toSeq ?? Number.MAX_SAFE_INTEGER;
+    const limit = options.limit ?? 5000;
+    const rows = options.name
+      ? (this.#db
+          .prepare(
+            `SELECT id, payload_sealed FROM package_events
+             WHERE project_id = ? AND seq >= ? AND seq <= ? AND name = ?
+             ORDER BY seq LIMIT ?`,
+          )
+          .all(projectId, from, to, options.name, limit) as { id: string; payload_sealed: string }[])
+      : (this.#db
+          .prepare(
+            `SELECT id, payload_sealed FROM package_events
+             WHERE project_id = ? AND seq >= ? AND seq <= ? ORDER BY seq LIMIT ?`,
+          )
+          .all(projectId, from, to, limit) as { id: string; payload_sealed: string }[]);
+    return rows.map((row) => this.#open<PackageEventV1>(row.payload_sealed, `package-event:${row.id}`));
+  }
+
+  /**
+   * Every change recorded while one revision was checked out, in order.
+   *
+   * This is what lets a capture pin the versions the machine actually had at
+   * that revision, instead of only what happens to be on disk now.
+   */
+  listPackageEventsForCommit(projectId: string, commit: string): PackageEventV1[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT id, payload_sealed FROM package_events
+         WHERE project_id = ? AND commit_sha = ? ORDER BY seq`,
+      )
+      .all(projectId, commit) as { id: string; payload_sealed: string }[];
+    return rows.map((row) => this.#open<PackageEventV1>(row.payload_sealed, `package-event:${row.id}`));
+  }
+
+  countPackageEvents(projectId: string): number {
+    const row = this.#db
+      .prepare("SELECT COUNT(*) AS n FROM package_events WHERE project_id = ?")
+      .get(projectId) as { n: number };
+    return Number(row.n);
+  }
+
+  saveInventoryBaseline(baseline: InventoryBaselineV1): void {
+    this.#db
+      .prepare(
+        `INSERT INTO inventory_baselines (id, project_id, seq, at, commit_sha, payload_sealed)
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(
+        baseline.id,
+        baseline.projectId,
+        baseline.seq,
+        baseline.at,
+        baseline.commit,
+        this.#seal(baseline, `baseline:${baseline.id}`),
+      );
+  }
+
+  /** The newest baseline at or before a sequence number, if any. */
+  baselineAtOrBefore(projectId: string, seq: number): InventoryBaselineV1 | null {
+    const row = this.#db
+      .prepare(
+        `SELECT id, payload_sealed FROM inventory_baselines
+         WHERE project_id = ? AND seq <= ? ORDER BY seq DESC, at DESC LIMIT 1`,
+      )
+      .get(projectId, seq) as { id: string; payload_sealed: string } | undefined;
+    return row ? this.#open<InventoryBaselineV1>(row.payload_sealed, `baseline:${row.id}`) : null;
+  }
+
+  /**
+   * Thin out old baselines.
+   *
+   * A baseline is a shortcut, not evidence: the events are the record, and a
+   * fold from any earlier baseline plus the events after it produces exactly
+   * the same answer. Dropping one costs a little replay time and no accuracy,
+   * which is why this only ever touches baselines and never an event.
+   *
+   * Recent ones are kept in full because recent questions are the common ones.
+   * Older days keep one apiece, and the oldest is always kept - it is the
+   * anchor for every question about the beginning.
+   *
+   * Returns how many were removed.
+   */
+  pruneBaselines(projectId: string, now: string, keepFullDays = 7): number {
+    const cutoff = Date.parse(now) - keepFullDays * 24 * 60 * 60 * 1000;
+    if (!Number.isFinite(cutoff)) return 0;
+
+    return this.#inTransaction(() => {
+      const rows = this.#db
+        .prepare(
+          "SELECT id, at, seq FROM inventory_baselines WHERE project_id = ? ORDER BY seq ASC, at ASC",
+        )
+        .all(projectId) as { id: string; at: string; seq: number }[];
+      if (rows.length <= 2) return 0;
+
+      const keepPerBucket = new Map<string, string>();
+      const doomed: string[] = [];
+      const nowMs = Date.parse(now);
+      for (const [index, row] of rows.entries()) {
+        const at = Date.parse(row.at);
+        // Always keep the oldest and anything inside the recent window.
+        if (index === 0 || !Number.isFinite(at) || at >= cutoff) continue;
+
+        // Resolution falls off with age, the way anyone actually asks about
+        // their own history: this week in detail, last month by day, older
+        // than that by week.
+        const ageDays = (nowMs - at) / (24 * 60 * 60 * 1000);
+        const bucket =
+          ageDays <= 30
+            ? row.at.slice(0, 10)
+            : `week-${Math.floor(at / (7 * 24 * 60 * 60 * 1000))}`;
+
+        const previous = keepPerBucket.get(bucket);
+        if (previous !== undefined) doomed.push(previous);
+        keepPerBucket.set(bucket, row.id);
+      }
+
+      if (doomed.length === 0) return 0;
+      const remove = this.#db.prepare("DELETE FROM inventory_baselines WHERE id = ?");
+      for (const id of doomed) remove.run(id);
+      return doomed.length;
+    });
+  }
+
+  /** Rough on-disk size of the log, for `iwomc doctor`. */
+  packageLogFootprint(projectId: string): {
+    events: number;
+    baselines: number;
+    approximateBytes: number;
+  } {
+    const row = this.#db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM package_events WHERE project_id = ?) AS events,
+           (SELECT COUNT(*) FROM inventory_baselines WHERE project_id = ?) AS baselines,
+           (SELECT COALESCE(SUM(LENGTH(payload_sealed)), 0) FROM package_events WHERE project_id = ?) AS eventBytes,
+           (SELECT COALESCE(SUM(LENGTH(payload_sealed)), 0) FROM inventory_baselines WHERE project_id = ?) AS baselineBytes`,
+      )
+      .get(projectId, projectId, projectId, projectId) as {
+      events: number;
+      baselines: number;
+      eventBytes: number;
+      baselineBytes: number;
+    };
+    return {
+      events: Number(row.events),
+      baselines: Number(row.baselines),
+      approximateBytes: Number(row.eventBytes) + Number(row.baselineBytes),
+    };
+  }
+
+  /**
+   * The newest baseline recorded while a specific revision was checked out.
+   *
+   * Asking only whether the *latest* baseline happens to match would answer
+   * "never observed" for a revision that was plainly observed, just not most
+   * recently.
+   */
+  latestBaselineForCommit(projectId: string, commit: string): InventoryBaselineV1 | null {
+    const row = this.#db
+      .prepare(
+        `SELECT id, payload_sealed FROM inventory_baselines
+         WHERE project_id = ? AND commit_sha = ? ORDER BY seq DESC, at DESC LIMIT 1`,
+      )
+      .get(projectId, commit) as { id: string; payload_sealed: string } | undefined;
+    return row ? this.#open<InventoryBaselineV1>(row.payload_sealed, `baseline:${row.id}`) : null;
+  }
+
+  /** Highest sequence number recorded at or before an instant. */
+  seqAtTime(projectId: string, when: string): number {
+    const row = this.#db
+      .prepare(
+        "SELECT COALESCE(MAX(seq), -1) AS last FROM package_events WHERE project_id = ? AND at <= ?",
+      )
+      .get(projectId, when) as { last: number };
+    return Number(row.last);
+  }
+
+  /** Highest sequence number observed while a revision was checked out. */
+  seqAtCommit(projectId: string, commit: string): number | null {
+    const row = this.#db
+      .prepare(
+        "SELECT MAX(seq) AS last FROM package_events WHERE project_id = ? AND commit_sha = ?",
+      )
+      .get(projectId, commit) as { last: number | null };
+    return row.last === null ? null : Number(row.last);
+  }
+
+  // -- watch coverage -----------------------------------------------------
+
+  /**
+   * Claim the right to record changes for one project on this device.
+   *
+   * Only one recorder per project may write. Two would each notice the same
+   * real install from their own last reading and log it twice, at two slightly
+   * different times, and the history would say a package changed twice when it
+   * changed once. The lease is the watch session itself: it is held while the
+   * session is open and its heartbeat is recent, and it is released when the
+   * recorder stops or stops beating.
+   */
+  acquireRecorderLease(input: {
+    sessionId: string;
+    projectId: string;
+    at: string;
+    sweepIntervalMs: number;
+  }): { acquired: boolean; heldBy?: { startedAt: string; lastSeenAt: string } } {
+    return this.#inTransaction(() => {
+      const now = Date.parse(input.at);
+      const rows = this.#db
+        .prepare(
+          `SELECT id, started_at, last_seen_at, sweep_interval_ms, recorder_pid FROM watch_sessions
+           WHERE project_id = ? AND ended_at IS NULL`,
+        )
+        .all(input.projectId) as {
+        id: string;
+        started_at: string;
+        last_seen_at: string;
+        sweep_interval_ms: number;
+        recorder_pid: number;
+      }[];
+
+      for (const row of rows) {
+        if (row.id === input.sessionId) continue;
+        const lastSeen = Date.parse(row.last_seen_at);
+        // Twice its own interval, floored at a minute: long enough that a slow
+        // sweep does not look dead, short enough that a killed recorder frees
+        // the project quickly.
+        const grace = Math.max(Number(row.sweep_interval_ms) * 2, 60_000);
+        const beatingRecently =
+          Number.isFinite(lastSeen) && Number.isFinite(now) && now - lastSeen <= grace;
+
+        // A recorder killed outright never writes `ended_at`, and with a long
+        // interval its heartbeat grace could hold the project for many
+        // minutes. Checking whether its process still exists releases it at
+        // once. This can only ever release sooner: if the id has been reused by
+        // an unrelated process the check says "alive" and the heartbeat rule
+        // still applies.
+        const alive = Number(row.recorder_pid) > 0 ? processExists(Number(row.recorder_pid)) : true;
+
+        if (beatingRecently && alive) {
+          return {
+            acquired: false,
+            heldBy: { startedAt: row.started_at, lastSeenAt: row.last_seen_at },
+          };
+        }
+        // Close its session at its last heartbeat so it stops claiming
+        // coverage for time nobody watched.
+        this.#db
+          .prepare("UPDATE watch_sessions SET ended_at = ?, reason = ? WHERE id = ?")
+          .run(row.last_seen_at, alive ? "no heartbeat" : "recorder process ended", row.id);
+      }
+
+      this.#db
+        .prepare(
+          `INSERT INTO watch_sessions
+             (id, project_id, started_at, last_seen_at, sweep_interval_ms, recorder_pid)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.sessionId,
+          input.projectId,
+          input.at,
+          input.at,
+          input.sweepIntervalMs,
+          process.pid,
+        );
+      return { acquired: true };
+    });
+  }
+
+  /** Record that the watcher was still alive at this instant. */
+  touchWatchSession(id: string, at: string): void {
+    this.#db.prepare("UPDATE watch_sessions SET last_seen_at = ? WHERE id = ?").run(at, id);
+  }
+
+  endWatchSession(id: string, endedAt: string, reason: string): void {
+    this.#db
+      .prepare("UPDATE watch_sessions SET ended_at = ?, reason = ? WHERE id = ?")
+      .run(endedAt, reason, id);
+  }
+
+  /**
+   * Periods the watcher was running. A fold across a period NOT listed here is
+   * reconstructed from sweeps alone or not at all, and must say so rather than
+   * implying the log is complete.
+   */
+  listWatchSessions(projectId: string): WatchSessionRecord[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT started_at, last_seen_at, sweep_interval_ms, ended_at
+         FROM watch_sessions WHERE project_id = ? ORDER BY started_at`,
+      )
+      .all(projectId) as {
+      started_at: string;
+      last_seen_at: string;
+      sweep_interval_ms: number;
+      ended_at: string | null;
+    }[];
+    return rows.map((row) => ({
+      startedAt: row.started_at,
+      lastSeenAt: row.last_seen_at,
+      sweepIntervalMs: Number(row.sweep_interval_ms),
+      endedAt: row.ended_at,
+    }));
   }
 
   // -- audit --------------------------------------------------------------

@@ -89,6 +89,8 @@ export interface ControlPlaneStore {
 
   createJob(workspaceId: string, job: JobRecord): void;
   listJobsForDevice(workspaceId: string, deviceId: string, now: string): JobRecord[];
+  /** Mark queued or delivered jobs past their expiry as expired. */
+  expireStaleJobs(now: string): number;
   listJobs(workspaceId: string, limit: number): JobRecord[];
   getJob(workspaceId: string, id: string): JobRecord | null;
   updateJob(workspaceId: string, id: string, update: Partial<Omit<JobRecord, "request">>): void;
@@ -152,11 +154,21 @@ CREATE TABLE IF NOT EXISTS jobs (
   state TEXT NOT NULL, request TEXT NOT NULL, progress TEXT NOT NULL, outcome_run_id TEXT,
   expires_at TEXT NOT NULL, created_at TEXT NOT NULL
 );
+-- Every enrolled device asks "anything for me?" on a timer, and the answer is
+-- almost always no. Unindexed that question scans every job the team has ever
+-- created, from every device, forever.
+CREATE INDEX IF NOT EXISTS jobs_device_state ON jobs (workspace_id, device_id, state);
+CREATE INDEX IF NOT EXISTS jobs_workspace_created ON jobs (workspace_id, created_at);
 CREATE TABLE IF NOT EXISTS audit (
   id TEXT PRIMARY KEY, workspace_id TEXT, at TEXT NOT NULL, actor TEXT NOT NULL,
   action TEXT NOT NULL, subject TEXT NOT NULL, detail TEXT NOT NULL,
   previous_digest TEXT, digest TEXT NOT NULL, seq INTEGER
 );
+-- Appending chains onto the newest row for the workspace and allocates the
+-- next sequence. Unindexed, both are full scans, and this is the one table
+-- every member of a team writes to on every action.
+CREATE INDEX IF NOT EXISTS audit_seq ON audit (seq);
+CREATE INDEX IF NOT EXISTS audit_workspace_seq ON audit (workspace_id, seq);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, person_id TEXT NOT NULL, workspace_id TEXT NOT NULL, expires_at TEXT NOT NULL
 );
@@ -564,6 +576,24 @@ export class SqliteControlPlaneStore implements ControlPlaneStore {
         job.request.expiresAt,
         job.request.issuedAt,
       );
+  }
+
+  /**
+   * Close out work that was never picked up.
+   *
+   * A device that is asleep, revoked, or simply switched off leaves its jobs
+   * queued. Without this they sit in the table forever, are scanned by every
+   * later poll, and show in the console as though they were still going to
+   * happen. Marking them expired is the truthful outcome: nobody ran them.
+   */
+  expireStaleJobs(now: string): number {
+    const result = this.#db
+      .prepare(
+        `UPDATE jobs SET state = 'expired'
+         WHERE state IN ('queued', 'delivered') AND expires_at <= ?`,
+      )
+      .run(now);
+    return Number(result.changes ?? 0);
   }
 
   listJobsForDevice(workspaceId: string, deviceId: string, now: string): JobRecord[] {

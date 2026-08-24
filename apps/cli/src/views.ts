@@ -46,6 +46,8 @@ export function renderStatus(status: StatusResult): string {
     out.push(`  ${style.signal(style.bold("iwomc rescue"))}  ${style.dim("<- the one action that matters here")}`);
   }
 
+  if (status.agreement) out.push(renderAgreement(status.agreement));
+
   out.push(heading("Contract"));
   if (status.exactContract) {
     const contract = status.exactContract;
@@ -183,7 +185,7 @@ export function renderCapture(result: CaptureResult): string {
     out.push(heading("Drift found"));
     for (const finding of result.drift) {
       out.push(line("attention", humanLabel(finding.kind), finding.summary));
-      out.push(bullet(`declared in ${finding.affectedDeclaration}`, "     "));
+      out.push(bullet(`review file: ${finding.affectedDeclaration}`, "     "));
     }
     out.push("");
     out.push(style.dim("  Run `iwomc promote` to turn these into a reviewable repository diff."));
@@ -373,4 +375,266 @@ function assuranceLabel(assurance: string): string {
 
 function supportTone(level: string): Tone {
   return level === "native" ? "ready" : level === "recipe" ? "attention" : "neutral";
+}
+
+// ---------------------------------------------------------------------------
+// The package timeline
+// ---------------------------------------------------------------------------
+
+type TimelineResult = Awaited<ReturnType<Companion["timeline"]>>;
+type TimelineDiffResult = Awaited<ReturnType<Companion["timelineDiff"]>>;
+type SweepResult = Awaited<ReturnType<Companion["sweepOnce"]>>["result"];
+
+const KIND_TONE: Readonly<Record<string, Tone>> = {
+  installed: "ready",
+  upgraded: "info",
+  downgraded: "attention",
+  removed: "danger",
+};
+
+const KIND_ARROW: Readonly<Record<string, string>> = {
+  installed: "+",
+  upgraded: "^",
+  downgraded: "v",
+  removed: "-",
+};
+
+/**
+ * A package.json without a `version` is unusual but legal, and local packages
+ * do it. Rendering the gap as blank leaves a reader guessing whether something
+ * failed, so it is named instead.
+ */
+function versionLabel(version: string | null): string {
+  if (version === null) return "";
+  return version.trim().length === 0 ? "unknown version" : version;
+}
+
+function versionMove(fromVersion: string | null, toVersion: string | null): string {
+  if (fromVersion === null) return versionLabel(toVersion);
+  if (toVersion === null) return `${versionLabel(fromVersion)} removed`;
+  return `${versionLabel(fromVersion)} -> ${versionLabel(toVersion)}`;
+}
+
+export function renderTimeline(result: TimelineResult): string {
+  const out: string[] = [];
+  const state = result.state;
+
+  out.push(heading("Point in time"));
+  if ("kind" in state) {
+    out.push(line("attention", "This revision was never observed here", state.commit.slice(0, 12)));
+    out.push(wrapText(state.message));
+    out.push("");
+    out.push(
+      wrapText(
+        "A teammate who did have it checked out while watching can share their log. IWOMC will not estimate the answer from a nearby revision.",
+      ),
+    );
+    return out.join("\n");
+  }
+
+  out.push(
+    keyValue([
+      ["At", state.at],
+      ["Revision", state.commit ? state.commit.slice(0, 12) : "not recorded"],
+      ["Packages", String(state.packages.length)],
+      ["Events replayed", `${state.replayedEvents} of ${result.totalEvents} recorded`],
+    ]),
+  );
+
+  if (result.recentEvents.length > 0) {
+    out.push(heading("Most recent changes"));
+    for (const event of [...result.recentEvents].reverse().slice(0, 12)) {
+      const tone = KIND_TONE[event.kind] ?? "neutral";
+      out.push(
+        line(
+          tone,
+          `${KIND_ARROW[event.kind] ?? " "} ${event.name}`,
+          `${versionMove(event.fromVersion, event.toVersion)}  ${style.dim(event.at)}`,
+        ),
+      );
+      if (event.cause) {
+        out.push(style.dim(`      ran: ${event.cause.argv.join(" ")}`));
+      }
+    }
+  } else {
+    out.push(heading("Most recent changes"));
+    out.push(
+      wrapText(
+        "Nothing has changed since IWOMC started watching this project. Run `iwomc watch` in the background to record installs as they happen.",
+      ),
+    );
+  }
+
+  if (state.coverage.length > 0) {
+    out.push(heading("What this answer does not cover"));
+    for (const gap of state.coverage) {
+      out.push(line("attention", humanLabel(gap.area)));
+      out.push(wrapText(gap.reason, 74, "      "));
+      if (gap.remediation) out.push(style.dim(`      ${gap.remediation}`));
+    }
+  }
+
+  out.push(renderMemoryNarration(result.memory));
+  return out.join("\n");
+}
+
+function renderMemoryNarration(memory: TimelineResult["memory"]): string {
+  const out: string[] = [];
+  out.push(heading("What the agent was doing"));
+  if (memory === null) {
+    out.push(style.dim("  Memory integration is not configured. The record above is unaffected."));
+    return out.join("\n");
+  }
+  if (memory.status.status !== "connected") {
+    out.push(line("attention", "Memory disconnected", memory.status.detail));
+    out.push(style.dim("  The record above is deterministic and unaffected."));
+    return out.join("\n");
+  }
+  if (memory.entries.length === 0) {
+    out.push(style.dim("  Claude-Mem holds no observations near this moment."));
+    return out.join("\n");
+  }
+  out.push(style.dim("  From durable memory. Explanation only - never used as environment truth."));
+  for (const entry of memory.entries.slice(0, 6)) {
+    out.push(bullet(`${entry.title}${entry.at ? style.dim(` (${entry.at})`) : ""}`));
+    out.push(wrapText(entry.text.slice(0, 200), 74, "      "));
+  }
+  return out.join("\n");
+}
+
+export function renderTimelineDiff(result: TimelineDiffResult): string {
+  const out: string[] = [];
+  out.push(heading("Difference between two points"));
+
+  if (result.missing.length > 0) {
+    for (const missing of result.missing) {
+      out.push(line("attention", `Revision ${missing.commit.slice(0, 12)} was never observed here`));
+      out.push(wrapText(missing.message));
+    }
+    return out.join("\n");
+  }
+  if (result.diff === null) return out.join("\n");
+
+  const label = (side: TimelineDiffResult["from"]) => side.commit?.slice(0, 12) ?? side.at ?? "unknown";
+  out.push(keyValue([["From", label(result.from)], ["To", label(result.to)]]));
+
+  if (result.diff.entries.length === 0) {
+    out.push("");
+    out.push(line("ready", "No package differences", "the two points hold the same installed set"));
+  } else {
+    out.push("");
+    for (const entry of result.diff.entries) {
+      out.push(
+        line(
+          KIND_TONE[entry.kind] ?? "neutral",
+          `${KIND_ARROW[entry.kind] ?? " "} ${entry.name}`,
+          `${versionMove(entry.fromVersion, entry.toVersion)}  ${style.dim(entry.manager)}`,
+        ),
+      );
+    }
+  }
+
+  if (result.diff.coverage.length > 0) {
+    out.push(heading("What this comparison does not cover"));
+    for (const gap of result.diff.coverage) {
+      out.push(line("attention", humanLabel(gap.area)));
+      out.push(wrapText(gap.reason, 74, "      "));
+    }
+  }
+  return out.join("\n");
+}
+
+export function renderSweep(result: SweepResult): string {
+  const out: string[] = [];
+  out.push(heading("Observation"));
+  out.push(
+    keyValue([
+      ["At", result.at],
+      ["Installed packages", String(result.packageCount)],
+      ["Changes recorded", String(result.events.length)],
+      ["Revision", result.commit ? result.commit.slice(0, 12) : "not recorded"],
+    ]),
+  );
+  for (const event of result.events) {
+    out.push(
+      line(
+        KIND_TONE[event.kind] ?? "neutral",
+        `${KIND_ARROW[event.kind] ?? " "} ${event.name}`,
+        versionMove(event.fromVersion, event.toVersion),
+      ),
+    );
+  }
+  if (result.unavailable.length > 0) {
+    out.push(heading("Not readable this sweep"));
+    for (const entry of result.unavailable) {
+      out.push(line("attention", entry.manager));
+      out.push(wrapText(entry.reason, 74, "      "));
+    }
+  }
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Where the team's machines differ
+// ---------------------------------------------------------------------------
+
+type AgreementView = NonNullable<StatusResult["agreement"]>;
+
+/**
+ * Only shown when there is something to say. An empty "everything agrees"
+ * panel on a one-person team would be noise, and worse, it would imply a
+ * comparison happened when there was nothing to compare.
+ */
+export function renderAgreement(agreement: AgreementView): string {
+  const out: string[] = [];
+  out.push(heading("How the team's machines compare"));
+
+  if (agreement.disputed.length === 0) {
+    out.push(
+      line(
+        "ready",
+        `${agreement.contractCount} captures agree`,
+        `all ${agreement.agreedPackages} packages match across ${agreement.platform}`,
+      ),
+    );
+  } else {
+    out.push(
+      line(
+        "attention",
+        `${agreement.contractCount} captures of this revision disagree`,
+        `${agreement.disputed.length} of ${agreement.agreedPackages + agreement.disputed.length} packages differ on ${agreement.platform}`,
+      ),
+    );
+    for (const entry of agreement.disputed.slice(0, 8)) {
+      const answers = entry.variants
+        .map((variant) => {
+          const held = `${variant.contractIds.length}`;
+          // "not required" is the interesting one: somebody has a package the
+          // others have never installed.
+          return variant.versionSpec === null
+            ? `${held}x not required`
+            : `${held}x ${variant.versionSpec}`;
+        })
+        .join(", ");
+      out.push(line("neutral", `  ${entry.name}`, `${answers}  ${style.dim(entry.manager)}`));
+    }
+    if (agreement.disputed.length > 8) {
+      out.push(style.dim(`      and ${agreement.disputed.length - 8} more.`));
+    }
+    out.push("");
+    out.push(
+      wrapText(
+        "IWOMC does not know which machine is right. It applies the contract with the most evidence behind it; this is only telling you the team has drifted apart.",
+      ),
+    );
+  }
+
+  if (agreement.notCompared.length > 0) {
+    out.push(
+      style.dim(
+        `  Not compared: captures for ${agreement.notCompared.join(", ")}. Differences between operating systems are expected.`,
+      ),
+    );
+  }
+  return out.join("\n");
 }

@@ -21,6 +21,24 @@ that does not exist.
 | R12 | Security, privacy, and audit | `packages/contracts/src/redaction.ts`, `packages/contracts/src/crypto.ts`, `packages/companion/src/store.ts`, `packages/control-plane/src/postgres.ts` | `packages/contracts/src/contracts.test.ts`, `packages/control-plane/src/control-plane.test.ts`, `packages/companion/src/companion.test.ts` |
 | R13 | UX and accessibility | `apps/console/src/styles.css`, `apps/console/src/components/signal-grid.tsx`, `apps/cli/src/render.ts` | `tests/console-e2e.test.ts` |
 
+## Beyond the specification
+
+The package event log is not in `specs/iwomc-rescue/requirements.md`; it was
+added afterwards. It is listed separately rather than as an invented `R14`, so
+the table above keeps mirroring the spec exactly.
+
+| Capability | What it demands | Implementation | Tests |
+| --- | --- | --- | --- |
+| Package event log | Install, upgrade, downgrade, and removal recorded against a revision and an honest observation window | `packages/companion/src/timeline.ts`, `packages/companion/src/watch.ts`, `packages/companion/src/store.ts` | `packages/companion/src/timeline.test.ts`, `packages/companion/src/watch.test.ts` |
+| Point-in-time queries | What was installed at an instant or a revision, with unobserved revisions refused rather than estimated | `packages/companion/src/history.ts`, `apps/cli/src/cli.ts`, `apps/console/src/routes/timeline.tsx` | `tests/timeline-e2e.test.ts`, `tests/console-e2e.test.ts` |
+| Log-informed capture | A contract that pins the versions the machine settled on, including a downgrade | `packages/companion/src/capture.ts`, `packages/companion/src/companion.ts` | `tests/timeline-e2e.test.ts` |
+| Memory timeline merge | Claude-Mem narration read back beside the deterministic record, never in place of it | `packages/integrations/src/claude-mem.ts`, `packages/companion/src/ports.ts` | `packages/integrations/src/claude-mem.test.ts`, `tests/console-e2e.test.ts` |
+| Version mismatch | A declared package installed at a version the lockfile would not produce, pinned so a rescue reproduces it | `packages/adapters/src/npm.ts`, `packages/adapters/src/python.ts` | `packages/adapters/src/adapters.test.ts`, `tests/rescue-e2e.test.ts` |
+| One recorder per project | A change recorded once, whichever process notices it, with a lease released promptly when a recorder dies | `packages/companion/src/store.ts`, `packages/companion/src/watch.ts` | `packages/companion/src/watch.test.ts` |
+| Contract selection on a team | The applied contract is the one with the most evidence that can run here, never merely the newest | `packages/companion/src/choose-contract.ts`, `packages/companion/src/companion.ts` | `packages/companion/src/choose-contract.test.ts` |
+| Machine agreement | Where several teammates' captures of one revision differ, compared only within a platform | `packages/companion/src/agreement.ts`, `apps/console/src/components/team-agreement.tsx` | `packages/companion/src/agreement.test.ts`, `tests/console-e2e.test.ts` |
+| Repository identity without a remote | Two local-only repositories are two projects, and a binding survives gaining a remote | `packages/companion/src/git.ts`, `packages/companion/src/project.ts` | `packages/companion/src/companion.test.ts` |
+
 ## Deliberate deferrals
 
 These are named in `specs/iwomc-rescue/tasks.md` as future work and are not

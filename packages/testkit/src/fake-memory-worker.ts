@@ -29,6 +29,14 @@ export interface FakeMemoryWorker {
   setMode(mode: "healthy" | "unhealthy" | "forbidden"): void;
   /** Observations returned by /api/search. */
   setSearchResults(results: unknown[]): void;
+  /**
+   * Body returned by /api/timeline.
+   *
+   * The real worker answers with an MCP content envelope carrying a rendered
+   * markdown table, so the default here is exactly that shape - a double that
+   * returned tidy JSON would let a parser bug through.
+   */
+  setTimelineBody(body: unknown): void;
   close(): Promise<void>;
 }
 
@@ -37,6 +45,7 @@ export async function startFakeMemoryWorker(): Promise<FakeMemoryWorker> {
   const requests: { method: string; path: string }[] = [];
   let mode: "healthy" | "unhealthy" | "forbidden" = "healthy";
   let searchResults: unknown[] = [];
+  let timelineBody: unknown = { content: [{ type: "text", text: DEFAULT_TIMELINE_MARKDOWN }] };
 
   const server: Server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0] ?? "/";
@@ -73,6 +82,12 @@ export async function startFakeMemoryWorker(): Promise<FakeMemoryWorker> {
           res.end(JSON.stringify({ error: "invalid session init" }));
         }
       });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/api/timeline") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(timelineBody));
       return;
     }
 
@@ -132,8 +147,31 @@ export async function startFakeMemoryWorker(): Promise<FakeMemoryWorker> {
     setSearchResults(results) {
       searchResults = results;
     },
+    setTimelineBody(body) {
+      timelineBody = body;
+    },
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }
+
+/**
+ * The exact shape a real Claude-Mem worker (13.x) returns from /api/timeline:
+ * a markdown table grouped under a date heading, with a ditto mark for a
+ * repeated time.
+ */
+const DEFAULT_TIMELINE_MARKDOWN = [
+  "# Timeline around anchor: 2026-08-23T14:06:00.000Z",
+  "**Window:** 3 records before -> 3 records after | **Items:** 3",
+  "",
+  "### Aug 23, 2026",
+  "",
+  "**General**",
+  "| ID | Time | T | Title | Tokens |",
+  "|----|------|---|-------|--------|",
+  "| #12 | 2:05 PM | \u25c6 | Agent installed a dependency to unblock the test run | ~109 |",
+  '| #13 | " | \u25c6 | Contract rescue passed on the second checkout | ~103 |',
+  "| #14 | 2:07 PM | \u25c6 | Promotion approved by the project author | ~113 |",
+  "",
+].join("\n");

@@ -109,6 +109,14 @@ export async function bindProject(
     binding = { ...binding, checkoutPath: projectDir };
     store.saveBinding(binding);
   }
+
+  binding ??= adoptBindingForDirectory(store, {
+    projectDir,
+    subdirectory,
+    workspaceId,
+    digest: git.canonicalRemoteDigest,
+  });
+
   if (!binding) {
     binding = {
       projectId: randomUUID(),
@@ -136,10 +144,47 @@ export async function resolveBoundProject(
   const projectDir = resolve(dir);
   const git = await readGitFacts(projectDir);
   const subdirectory = subdirectoryOf(git.repositoryRoot, projectDir);
-  const binding = store.findBindingByIdentity(git.canonicalRemoteDigest, subdirectory, workspaceId);
+  const binding =
+    store.findBindingByIdentity(git.canonicalRemoteDigest, subdirectory, workspaceId) ??
+    adoptBindingForDirectory(store, {
+      projectDir,
+      subdirectory,
+      workspaceId,
+      digest: git.canonicalRemoteDigest,
+    });
   if (!binding) return null;
   const files = await new FileSystemProjectFiles(projectDir).load();
   return { binding, git, projectDir, files, platform };
+}
+
+/**
+ * Re-attach a binding whose repository fingerprint has changed.
+ *
+ * A fingerprint is not forever: pushing a local-only repository to a remote
+ * for the first time changes it, and so did the upgrade that stopped every
+ * remote-less repository from sharing one identity. In both cases the same
+ * directory is still the same project, and the contracts and history recorded
+ * against it should stay attached rather than becoming unreachable.
+ *
+ * Matching is by directory, which is unambiguous: a directory is one checkout.
+ */
+function adoptBindingForDirectory(
+  store: CompanionStore,
+  input: { projectDir: string; subdirectory: string; workspaceId: string | null; digest: string },
+): ProjectBinding | null {
+  const existing = store
+    .listBindings()
+    .find(
+      (entry) =>
+        samePath(entry.checkoutPath, input.projectDir) &&
+        entry.subdirectory === input.subdirectory &&
+        (entry.workspaceId ?? null) === input.workspaceId &&
+        entry.canonicalRemoteDigest !== input.digest,
+    );
+  if (!existing) return null;
+  const updated = { ...existing, canonicalRemoteDigest: input.digest };
+  store.saveBinding(updated);
+  return updated;
 }
 
 /**

@@ -30,8 +30,25 @@ export interface LocalContext {
   integrations(): Promise<unknown>;
   drift(projectId: string): Promise<unknown>;
   capabilities(): Promise<unknown>;
+  /**
+   * The package log lives on the device that recorded it, never in the
+   * control plane. A deployed dashboard with no Companion attached answers
+   * "not available here" rather than serving another device's history.
+   */
+  timeline(projectId: string | null, query: { at?: string; commit?: string }): Promise<unknown>;
+  timelineDiff(
+    projectId: string | null,
+    from: { at?: string; commit?: string },
+    to: { at?: string; commit?: string },
+  ): Promise<unknown>;
   deviceId(): string | null;
 }
+
+const TIMELINE_UNAVAILABLE = {
+  available: false,
+  detail:
+    "The package timeline is recorded by the Companion on each device and is never uploaded. Open this console on a machine running `iwomc serve` to read it.",
+} as const;
 
 export interface ServerOptions {
   readonly service: ControlPlaneService;
@@ -346,6 +363,50 @@ export function createControlPlaneServer(options: ServerOptions): Server {
       sendJson(res, 200, {
         available: true,
         findings: await options.local.drift(projectId ?? ""),
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/timeline") {
+      if (!options.local) {
+        sendJson(res, 200, TIMELINE_UNAVAILABLE);
+        return;
+      }
+      const at = url.searchParams.get("at");
+      const commit = url.searchParams.get("commit");
+      sendJson(res, 200, {
+        available: true,
+        timeline: await options.local.timeline(url.searchParams.get("projectId"), {
+          ...(at ? { at } : {}),
+          ...(commit ? { commit } : {}),
+        }),
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/timeline-diff") {
+      if (!options.local) {
+        sendJson(res, 200, TIMELINE_UNAVAILABLE);
+        return;
+      }
+      const fromCommit = url.searchParams.get("fromCommit");
+      const toCommit = url.searchParams.get("toCommit");
+      const since = url.searchParams.get("since");
+      const until = url.searchParams.get("until");
+      if (!(fromCommit && toCommit) && !since) {
+        sendJson(res, 400, {
+          error:
+            "A comparison needs two points of the same kind: fromCommit and toCommit, or since (and optionally until).",
+        });
+        return;
+      }
+      sendJson(res, 200, {
+        available: true,
+        diff: await options.local.timelineDiff(
+          url.searchParams.get("projectId"),
+          fromCommit ? { commit: fromCommit } : { at: since as string },
+          toCommit ? { commit: toCommit } : until ? { at: until } : {},
+        ),
       });
       return;
     }

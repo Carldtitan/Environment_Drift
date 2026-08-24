@@ -786,6 +786,115 @@ export const VERIFICATION_ATTESTATION_SCHEMA: JsonSchema = {
   },
 };
 
+export const PACKAGE_EVENT_SCHEMA: JsonSchema = {
+  $id: "https://iwomc.dev/schemas/package-event-v1.json",
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "PackageEventV1",
+  description:
+    "One observed change to a project-local package, bound to both a time window and the revision that was checked out.",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "schemaVersion",
+    "id",
+    "projectId",
+    "seq",
+    "at",
+    "window",
+    "ecosystem",
+    "manager",
+    "adapterId",
+    "name",
+    "fromVersion",
+    "toVersion",
+    "kind",
+    "commit",
+    "branch",
+    "worktreeDirty",
+    "source",
+  ],
+  properties: {
+    schemaVersion: { const: 1 },
+    id: ID,
+    projectId: ID,
+    seq: { type: "integer", minimum: 0 },
+    at: TIMESTAMP,
+    window: {
+      type: "object",
+      additionalProperties: false,
+      required: ["from", "to"],
+      properties: { from: TIMESTAMP, to: TIMESTAMP },
+    },
+    ecosystem: { type: "string", minLength: 1, maxLength: 64 },
+    manager: { type: "string", minLength: 1, maxLength: 64 },
+    adapterId: ID,
+    name: { type: "string", minLength: 1, maxLength: 214 },
+    fromVersion: { type: ["string", "null"], maxLength: 128 },
+    toVersion: { type: ["string", "null"], maxLength: 128 },
+    kind: { enum: ["installed", "upgraded", "downgraded", "removed"] },
+    commit: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$" },
+    branch: { type: ["string", "null"], maxLength: 255 },
+    worktreeDirty: { type: "boolean" },
+    source: { enum: ["watched", "swept", "imported"] },
+    cause: {
+      type: "object",
+      additionalProperties: false,
+      required: ["argv", "pid", "confidence"],
+      properties: {
+        argv: { type: "array", items: { type: "string", maxLength: 4096 }, minItems: 1, maxItems: 64 },
+        pid: { type: "integer", minimum: 0 },
+        startedAt: TIMESTAMP,
+        confidence: { enum: ["high", "medium", "low"] },
+        agentSession: {
+          type: "object",
+          additionalProperties: false,
+          required: ["provider", "sessionRef"],
+          properties: {
+            provider: { type: "string", minLength: 1, maxLength: 64 },
+            sessionRef: { type: "string", minLength: 1, maxLength: 256 },
+          },
+        },
+      },
+    },
+  },
+};
+
+export const INVENTORY_BASELINE_SCHEMA: JsonSchema = {
+  $id: "https://iwomc.dev/schemas/inventory-baseline-v1.json",
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "InventoryBaselineV1",
+  type: "object",
+  additionalProperties: false,
+  required: ["schemaVersion", "id", "projectId", "seq", "at", "commit", "entries", "digest"],
+  properties: {
+    schemaVersion: { const: 1 },
+    id: ID,
+    projectId: ID,
+    // The very first baseline sits at -1: it is the state before any event
+    // was recorded, which is exactly what a fold needs as its starting point.
+    seq: { type: "integer", minimum: -1 },
+    at: TIMESTAMP,
+    commit: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$" },
+    digest: DIGEST,
+    entries: {
+      type: "array",
+      maxItems: 20_000,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ecosystem", "manager", "adapterId", "name", "version"],
+        properties: {
+          ecosystem: { type: "string", minLength: 1, maxLength: 64 },
+          manager: { type: "string", minLength: 1, maxLength: 64 },
+          adapterId: { type: "string", minLength: 1, maxLength: 64 },
+          name: { type: "string", minLength: 1, maxLength: 214 },
+          version: { type: "string", maxLength: 128 },
+        },
+      },
+    },
+  },
+};
+
 export const WORKSPACE_ROLE_SCHEMA: JsonSchema = {
   $id: "https://iwomc.dev/schemas/workspace-role.json",
   title: "WorkspaceRole",
@@ -802,6 +911,8 @@ export const SCHEMAS = {
   "rescue-event-v1": RESCUE_EVENT_SCHEMA,
   "rescue-outcome-v1": RESCUE_OUTCOME_SCHEMA,
   "verification-attestation-v1": VERIFICATION_ATTESTATION_SCHEMA,
+  "package-event-v1": PACKAGE_EVENT_SCHEMA,
+  "inventory-baseline-v1": INVENTORY_BASELINE_SCHEMA,
   "workspace-role": WORKSPACE_ROLE_SCHEMA,
 } as const satisfies Record<string, JsonSchema>;
 

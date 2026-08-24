@@ -173,6 +173,17 @@ describe("when the worker is unavailable", () => {
     expect(found.status.status).toBe("disconnected");
   });
 
+  it("returns an empty timeline rather than a placeholder when the worker is down", async () => {
+    worker.setMode("unhealthy");
+    const result = await memory.timeline({
+      anchor: "2026-08-23T14:06:00.000Z",
+      depthBefore: 3,
+      depthAfter: 3,
+    });
+    expect(result.entries).toEqual([]);
+    expect(result.status.status).toBe("disconnected");
+  });
+
   it("survives a worker that is not listening at all", async () => {
     await worker.close();
     const status = await memory.status();
@@ -182,11 +193,79 @@ describe("when the worker is unavailable", () => {
   });
 });
 
+describe("reading the timeline around an instant", () => {
+  let worker: FakeMemoryWorker;
+  let memory: ClaudeMemAdapter;
+  // The worker renders wall-clock times in the reader's own timezone, so the
+  // anchor is built the same way. Hardcoding a UTC instant here would make the
+  // expectations pass only on a machine that happens to run in UTC.
+  const anchor = new Date(Date.parse("Aug 23, 2026 2:06 PM")).toISOString();
+
+  beforeEach(async () => {
+    worker = await startFakeMemoryWorker();
+    memory = new ClaudeMemAdapter({ baseUrl: worker.baseUrl });
+  });
+
+  afterEach(async () => {
+    await worker.close();
+  });
+
+  it("reads the worker's rendered markdown table", async () => {
+    const result = await memory.timeline({ anchor, depthBefore: 3, depthAfter: 3 });
+    expect(result.entries.map((entry) => entry.id)).toEqual(["12", "13", "14"]);
+    expect(result.entries[0]?.title).toContain("installed a dependency");
+    expect(result.entries.every((entry) => entry.source === "claude-mem")).toBe(true);
+  });
+
+  it("carries a repeated time down from the row above", async () => {
+    const result = await memory.timeline({ anchor, depthBefore: 3, depthAfter: 3 });
+    // Row 13 is written with a ditto mark, so it shares row 12's timestamp.
+    expect(result.entries[1]?.at).toBe(result.entries[0]?.at);
+    expect(result.entries[2]?.at).not.toBe(result.entries[0]?.at);
+  });
+
+  it("places each entry relative to the anchor", async () => {
+    const result = await memory.timeline({ anchor, depthBefore: 3, depthAfter: 3 });
+    expect(result.entries.map((entry) => entry.position)).toEqual(["before", "before", "after"]);
+  });
+
+  it("still reads a worker version that answers with structured observations", async () => {
+    worker.setTimelineBody({
+      before: [{ id: 1, title: "earlier", created_at: "2026-08-23T13:00:00.000Z" }],
+      after: [{ id: 2, title: "later", created_at: "2026-08-23T15:00:00.000Z" }],
+    });
+    const result = await memory.timeline({ anchor, depthBefore: 3, depthAfter: 3 });
+    expect(result.entries.map((entry) => [entry.id, entry.position])).toEqual([
+      ["1", "before"],
+      ["2", "after"],
+    ]);
+  });
+
+  it("returns nothing rather than guessing when the worker has no context", async () => {
+    worker.setTimelineBody({
+      content: [{ type: "text", text: "No context found around anchor (5 records before, 5 records after)" }],
+    });
+    const result = await memory.timeline({ anchor, depthBefore: 5, depthAfter: 5 });
+    expect(result.entries).toEqual([]);
+  });
+
+  it("passes the project pseudonym, never a real path", async () => {
+    await memory.timeline({
+      anchor,
+      depthBefore: 1,
+      depthAfter: 1,
+      projectPseudonym: "iwomc-abc123def456",
+    });
+    expect(worker.requests.some((request) => request.path === "/api/timeline")).toBe(true);
+  });
+});
+
 describe("the disabled memory port", () => {
   it("reports not_configured and never claims to have recorded anything", async () => {
     const memory = new DisabledMemory();
     expect((await memory.status()).status).toBe("not_configured");
     expect((await memory.record()).recorded).toBe(false);
     expect((await memory.search()).hits).toEqual([]);
+    expect((await memory.timeline()).entries).toEqual([]);
   });
 });

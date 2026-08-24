@@ -1,8 +1,24 @@
 import { resolve } from "node:path";
 import { BlockedError, BLOCKER_LABELS, type Blocker, type RescueEvent } from "@iwomc/contracts";
-import { Companion, NotAGitRepositoryError, formatCommand } from "@iwomc/companion";
+import {
+  Companion,
+  NotAGitRepositoryError,
+  RecorderBusyError,
+  formatCommand,
+  type SweepResult,
+} from "@iwomc/companion";
 import { buildCompanion } from "./wiring.js";
-import { renderStatus, renderCapture, renderDoctor, renderRescue, renderVerify, renderPromote } from "./views.js";
+import {
+  renderStatus,
+  renderCapture,
+  renderDoctor,
+  renderRescue,
+  renderVerify,
+  renderPromote,
+  renderSweep,
+  renderTimeline,
+  renderTimelineDiff,
+} from "./views.js";
 import { bullet, heading, line, style, wrapText } from "./render.js";
 import { AGENT_GUIDE, COMMAND_SPECS, renderCommandHelp, renderRootHelp } from "./agent-docs.js";
 import {
@@ -95,7 +111,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
   }
 
   if (args.command === "--version" || args.command === "-v" || args.command === "version") {
-    io.out("iwomc 0.1.3");
+    io.out("iwomc 0.1.6");
     return EXIT.ok;
   }
 
@@ -332,6 +348,167 @@ async function dispatch(
       if (json) io.out(JSON.stringify(contract, null, 2));
       else io.out(line("ready", "Contract approved", `${contract.id} is now ${contract.state}`));
       return EXIT.ok;
+    }
+
+    case "watch": {
+      const interval = Number(flagString(args.flags, "interval") ?? "45");
+      if (!Number.isFinite(interval) || interval < 5) {
+        io.err("Usage: iwomc watch [--interval <seconds, at least 5>]");
+        return EXIT.usage;
+      }
+      // Resolves when every recorder this command started has stopped, so a
+      // checkout that disappears ends the command instead of leaving it
+      // waiting on nothing.
+      let running = 0;
+      let noneLeft = () => {};
+      const allStopped = new Promise<void>((resolveStopped) => {
+        noneLeft = resolveStopped;
+      });
+
+      const watchOptions = {
+        sweepIntervalMs: Math.round(interval * 1000),
+        onSweep: (result: SweepResult) => {
+          if (result.events.length === 0) return;
+          if (json) {
+            io.out(JSON.stringify({ event: "sweep", ...result }));
+            return;
+          }
+          io.out(renderSweep(result));
+        },
+        onError: (error: Error) => io.err(line("attention", "Watch error", error.message)),
+        onStopped: (reason: string) => {
+          running -= 1;
+          if (reason !== "interrupted" && !json) {
+            io.out(line("attention", "Stopped watching", reason));
+          }
+          if (running <= 0) noneLeft();
+        },
+      };
+
+      const all = flagBool(args.flags, "all");
+      const started: { name: string; watcher: { stop: (reason?: string) => Promise<void> } }[] = [];
+
+      if (all) {
+        const result = await companion.watchAll(watchOptions);
+        for (const entry of result.watchers) started.push({ name: entry.projectName, watcher: entry.watcher });
+        if (json) {
+          io.out(JSON.stringify({ event: "watching", projects: result.watchers.map((entry) => entry.projectName), unavailable: result.unavailable }));
+        } else {
+          io.out(heading("Watching"));
+          if (started.length === 0) {
+            io.out(line("attention", "No checkout could be watched"));
+            io.out(wrapText("Run `iwomc init` inside a Git checkout first."));
+          }
+          for (const entry of started) io.out(line("ready", entry.name));
+          for (const entry of result.unavailable) {
+            io.out(line("attention", entry.projectName, entry.reason));
+          }
+        }
+      } else {
+        try {
+          const single = await companion.watch(dir, watchOptions);
+          started.push({ name: single.project.projectName, watcher: single.watcher });
+          if (!json) {
+            io.out(heading("Watching"));
+            io.out(line("ready", single.project.projectName));
+          }
+        } catch (error) {
+          if (!(error instanceof RecorderBusyError)) throw error;
+          // Not a failure. The log is already being kept, and a second
+          // recorder would write every change down twice.
+          if (json) {
+            io.out(JSON.stringify({ event: "already_watching", heldBy: error.heldBy ?? null }));
+          } else {
+            io.out(line("ready", "Already being watched", "another IWOMC recorder has this project"));
+            io.out(
+              wrapText(
+                error.heldBy
+                  ? `It started at ${error.heldBy.startedAt} and last checked at ${error.heldBy.lastSeenAt}. Nothing is missing; stop that one first if you want to watch from here.`
+                  : "Nothing is missing. Stop the other recorder first if you want to watch from here.",
+              ),
+            );
+          }
+          return EXIT.ok;
+        }
+      }
+
+      if (started.length === 0) return EXIT.blocked;
+      running = started.length;
+
+      if (!json) {
+        io.out(bullet(`Sweeping every ${interval}s, and immediately when a package directory changes.`));
+        io.out(bullet("Reads project-local package directories only. It never runs a package manager."));
+        io.out(style.dim("  Press Ctrl+C to stop. Stopping records the end of this observation window."));
+      }
+
+      // A watch session that is never closed makes every later fold read as
+      // "IWOMC might still have been looking", so stopping cleanly is part of
+      // the honesty of coverage reporting, not just tidiness.
+      const interrupted = new Promise<void>((resolveStop) => {
+        const finish = () => {
+          process.off("SIGINT", finish);
+          process.off("SIGTERM", finish);
+          resolveStop();
+        };
+        process.once("SIGINT", finish);
+        process.once("SIGTERM", finish);
+      });
+      await Promise.race([interrupted, allStopped]);
+      for (const entry of started) await entry.watcher.stop("interrupted");
+      if (!json) {
+        io.out(line("ready", "Stopped", `${started.length} observation window(s) closed`));
+      }
+      return EXIT.ok;
+    }
+
+    case "sweep": {
+      const sweep = await companion.sweepOnce(dir);
+      if (json) {
+        io.out(JSON.stringify({ ...sweep.result, recorded: sweep.recorded, heldBy: sweep.heldBy ?? null }, null, 2));
+        return EXIT.ok;
+      }
+      io.out(renderSweep(sweep.result));
+      if (!sweep.recorded) {
+        io.out("");
+        io.out(line("ready", "Not recorded here", "a resident `iwomc watch` is already keeping this log"));
+        io.out(wrapText("The reading above is current. Writing it from two processes would put one change in the history twice."));
+      }
+      return EXIT.ok;
+    }
+
+    case "timeline": {
+      const result = await companion.timeline(dir, {
+        ...(flagString(args.flags, "at") ? { at: flagString(args.flags, "at") as string } : {}),
+        ...(flagString(args.flags, "commit") ?? args.positional[0]
+          ? { commit: (flagString(args.flags, "commit") ?? args.positional[0]) as string }
+          : {}),
+        explain: !flagBool(args.flags, "no-explain"),
+      });
+      if (json) io.out(JSON.stringify(result, null, 2));
+      else io.out(renderTimeline(result));
+      return "kind" in result.state ? EXIT.blocked : EXIT.ok;
+    }
+
+    case "diff": {
+      const [first, second] = args.positional;
+      const fromCommit = flagString(args.flags, "from") ?? first;
+      const toCommit = flagString(args.flags, "to") ?? second;
+      const fromAt = flagString(args.flags, "since");
+      const toAt = flagString(args.flags, "until");
+      if ((!fromCommit && !fromAt) || (fromCommit && !toCommit)) {
+        // Comparing a revision against a wall-clock instant would silently mix
+        // two different questions, so both sides must be the same kind.
+        io.err("Usage: iwomc diff <from-commit> <to-commit>   or   iwomc diff --since <iso> [--until <iso>]");
+        return EXIT.usage;
+      }
+      const result = await companion.timelineDiff(
+        dir,
+        fromCommit ? { commit: fromCommit } : { at: fromAt as string },
+        toCommit ? { commit: toCommit } : (toAt ? { at: toAt } : {}),
+      );
+      if (json) io.out(JSON.stringify(result, null, 2));
+      else io.out(renderTimelineDiff(result));
+      return result.missing.length > 0 ? EXIT.blocked : EXIT.ok;
     }
 
     case "doctor": {

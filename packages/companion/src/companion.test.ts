@@ -88,6 +88,22 @@ describe("git identity", () => {
     expect(remoteDigest(canonicalizeRemote("https://github.com/acme/one"))).not.toBe(
       remoteDigest(canonicalizeRemote("https://github.com/acme/two")),
     );
+
+    // Without a remote, two different repositories must still be two different
+    // projects. They used to share one constant fingerprint, which meant one
+    // local-only project could be offered another's contracts.
+    expect(remoteDigest(null, { rootCommit: "a".repeat(40) })).not.toBe(
+      remoteDigest(null, { rootCommit: "b".repeat(40) }),
+    );
+    // A repository with no commits at all falls back to its path.
+    expect(remoteDigest(null, { projectDir: "/work/one" })).not.toBe(
+      remoteDigest(null, { projectDir: "/work/two" }),
+    );
+    // And the root commit wins over the path, so moving a folder keeps its
+    // identity.
+    expect(remoteDigest(null, { rootCommit: "c".repeat(40), projectDir: "/work/here" })).toBe(
+      remoteDigest(null, { rootCommit: "c".repeat(40), projectDir: "/work/moved" }),
+    );
   });
 
   it("resolves a subdirectory relative to the repository root", () => {
@@ -238,13 +254,29 @@ describe("the local store", () => {
     expect(events[0]?.previousDigest).toBe(events[1]?.digest);
   });
 
-  it("remembers which idempotency keys already succeeded", () => {
-    store.createRun({ id: "run-1", projectId: "p", contractId: "c", commit: "a".repeat(40), state: "requested", startedAt: NOW });
+  it("remembers which idempotency keys already succeeded, per checkout", () => {
+    store.createRun({
+      id: "run-1",
+      projectId: "p",
+      contractId: "c",
+      commit: "a".repeat(40),
+      checkoutPath: "/work/one",
+      state: "requested",
+      startedAt: NOW,
+    });
     store.appendJournal({ runId: "run-1", seq: 0, at: NOW, stepId: "s1", idempotencyKey: "key-1", phase: "succeeded", detail: {} });
     store.appendJournal({ runId: "run-1", seq: 1, at: NOW, stepId: "s2", idempotencyKey: "key-2", phase: "failed", detail: {} });
-    const done = store.completedIdempotencyKeys("p", "c");
+
+    const done = store.completedIdempotencyKeys("p", "c", "/work/one");
     expect(done.has("key-1")).toBe(true);
+    // A step that failed was not applied, so a resume must run it again.
     expect(done.has("key-2")).toBe(false);
+
+    // Two checkouts of one project can sit side by side. Work applied to one
+    // has plainly not been applied to the other, and treating it as done would
+    // make the second rescue install nothing while reporting success.
+    const elsewhere = store.completedIdempotencyKeys("p", "c", "/work/two");
+    expect(elsewhere.has("key-1")).toBe(false);
   });
 
   it("tracks spend as an append-only ledger", () => {

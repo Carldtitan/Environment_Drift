@@ -39,6 +39,63 @@ guessing.
 On a checkout that already works, **`capture_environment`** records the evidence
 and **`verify_contract`** checks it in a fresh directory.
 
+## Recording what you change
+
+A contract answers "what does this revision need". It cannot answer "what was
+installed at 14:32, and what changed between then and the commit you are
+looking at" - and a snapshot cannot even express a downgrade, which is often the
+fix a teammate needs.
+
+That is what the package log is for.
+
+- **`record_package_observation`** — call it after you install, upgrade, or
+  remove a dependency. It reads the project's package directories and appends
+  any change since the last observation. It runs no package manager, looks at
+  no other project, and touches no repository file.
+- **`package_timeline`** — what was installed at an instant, or while a
+  revision was checked out. The package state comes only from IWOMC's own log.
+  Durable memory is returned separately under `memory`, as narration.
+- **`package_timeline_diff`** — the installs, upgrades, downgrades, and
+  removals between two revisions, or two instants.
+
+A person can also leave `iwomc watch` running, which records changes as they
+happen instead of only when you remember to call the tool. Both write to the
+same log, and only one recorder writes at a time — if a watcher is already
+running, `record_package_observation` returns the current reading and tells you
+it did not write, because recording the same change twice would put it in the
+history twice.
+
+Two answers you must not paper over:
+
+- Anything Git understands works where a commit is expected: a short hash, a
+  branch name, a tag, or `HEAD~1`.
+- A revision the device never observed comes back as `commit_not_observed`.
+  There is no nearest-revision estimate, because a confident wrong answer about
+  someone's machine is the exact failure this product exists to prevent.
+- Every answer carries `coverage`. When the watcher was not running for part of
+  the period, the timing of a change is only as precise as the gap, and a change
+  that was made and then undone inside it is missing entirely. Say so rather
+  than presenting the log as complete.
+
+## When several teammates captured the same revision
+
+`environment_status` returns an `agreement` field once two or more captures of
+the current revision can be compared. It reports where the team's machines
+differ - a package one person has and the others do not, or a version two
+people disagree about - with the majority answer first.
+
+Three things to hold onto:
+
+- `agreement: null` means there was nothing to compare, not that the machines
+  agree. Do not report it as a clean result.
+- Only captures for the same platform are compared. Differences between
+  operating systems are expected, and `notCompared` lists the platforms that
+  were left out.
+- IWOMC does not decide which machine is right, and neither should you. Which
+  contract gets *applied* is chosen separately, on evidence: verified on a
+  clean machine beats checked locally, which beats approved, which beats an
+  unexamined candidate.
+
 ## Rules you can rely on
 
 - `working` is produced only by a passing proof command. Installing is not
@@ -50,6 +107,8 @@ and **`verify_contract`** checks it in a fresh directory.
   suggestion that needs an explicit `contractId`.
 - Every mutating tool refuses without `confirm: true`. That refusal is a
   `blocker` with code `approval_required`, not an error to route around.
+- A value IWOMC cannot interpret is refused with `invalid_input` rather than
+  answered from a guess. Fix the value; do not retry the same one.
 
 ## Reading a result
 
@@ -91,6 +150,11 @@ iwomc status --json
 iwomc rescue --json --approve
 iwomc promote --json          # preview
 iwomc promote --json --apply  # write the reviewed diff
+
+iwomc sweep --json                       # one observation now
+iwomc timeline --json                    # what is installed, and when it arrived
+iwomc timeline <commit> --json           # what was installed at a revision
+iwomc diff <from-commit> <to-commit>     # what separates two revisions
 ```
 
 Exit codes: `0` working/ok, `1` failed, `2` blocked, `3` unsupported,

@@ -6,6 +6,7 @@ import {
   createNodeProject,
   createRecipeProject,
   createSandbox,
+  installNodeProject,
   installUndeclaredPackage,
   runIwomc,
   type NodeProjectResult,
@@ -176,6 +177,36 @@ describe("capture in one checkout, rescue in another", () => {
     const skipped = payload.events.filter((event: { message: string }) => event.message.includes("already applied"));
     expect(skipped.length).toBeGreaterThan(0);
   }, 900_000);
+
+  it("does not treat work done in one checkout as done in another", async () => {
+    // Resuming an interrupted rescue is the point of the journal, but "already
+    // applied" has to mean applied *here*. Two checkouts of one project can sit
+    // side by side, and a second one that skipped every step would install
+    // nothing while reporting that it had.
+    const second = await project.clone();
+    const bind = await runIwomc(["init", "--json"], { cwd: second, env: sandbox.env });
+    expect(bind.exitCode).toBe(EXIT.ok);
+
+    const result = await runIwomc(["rescue", "--json", "--approve"], { cwd: second, env: sandbox.env });
+    const payload = result.json<{
+      state: string;
+      proof: { exitCode: number };
+      events: { message: string }[];
+    }>();
+    expect(payload.state).toBe("working");
+    expect(payload.proof.exitCode).toBe(0);
+
+    const skipped = payload.events.filter((event) => event.message.includes("already applied"));
+    expect(skipped, "a fresh checkout has had no step applied to it").toEqual([]);
+
+    // And the proof passes because the work was actually done here.
+    const proof = await run(["npm", "run", "proof"], {
+      cwd: second,
+      timeoutMs: 120_000,
+      envAllowlist: null,
+    });
+    expect(proof.exitCode).toBe(0);
+  }, 900_000);
 });
 
 describe("drift and promotion", () => {
@@ -210,6 +241,58 @@ describe("drift and promotion", () => {
     expect(finding?.affectedDeclaration).toBe("package.json");
     expect(payload.contract.steps.map((step: { kind: string }) => step.kind)).toContain("apply_package_overlay");
   }, 300_000);
+
+  it("notices a declared package sitting at a version the repository would not install", async () => {
+    // `npm install --no-save x@older` leaves no trace in Git: package.json and
+    // the lockfile still say one thing, node_modules holds another, and
+    // `git status` is clean. A teammate installing from the repository gets
+    // the locked version and a different program.
+    //
+    // The fixture's dependency is vendored with a `file:` specifier, which npm
+    // installs as a symlink - so the replacement has to be a real directory,
+    // exactly as a version-swapping install would leave behind. That the
+    // inventory reads the linked version at all is itself worth knowing: it is
+    // how pnpm-style trees are handled.
+    const declared = project.declaredDependency;
+    const installedDir = join(project.dir, "node_modules", declared);
+    await rm(installedDir, { recursive: true, force: true });
+    await mkdir(installedDir, { recursive: true });
+    await writeFile(
+      join(installedDir, "package.json"),
+      `${JSON.stringify({ name: declared, version: "0.0.1-rolled-back", main: "index.js" }, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(join(installedDir, "index.js"), "module.exports = { ok: true };\n", "utf8");
+
+    const status = await run(["git", "status", "--porcelain=v1"], {
+      cwd: project.dir,
+      timeoutMs: 60_000,
+      envAllowlist: null,
+    });
+    expect(status.stdout.trim(), "the repository must look untouched").toBe("");
+
+    const result = await runIwomc(["capture", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(result.exitCode).toBe(EXIT.ok);
+    const payload = result.json<{
+      drift: { kind: string; summary: string; affectedDeclaration: string }[];
+      contract: { requirements: { packages: { name: string; versionSpec: string }[] } };
+    }>();
+
+    const finding = payload.drift.find((entry) => entry.kind === "version_mismatch");
+    expect(finding, `expected a version mismatch, saw ${JSON.stringify(payload.drift)}`).toBeDefined();
+    expect(finding?.summary).toContain(declared);
+    expect(finding?.summary).toContain("0.0.1-rolled-back");
+    expect(finding?.affectedDeclaration).toBe("package-lock.json");
+
+    // And the contract pins what this machine actually runs, so a teammate
+    // gets the same thing rather than what a fresh install would resolve to.
+    const pinned = payload.contract.requirements.packages.find((entry) => entry.name === declared);
+    expect(pinned?.versionSpec).toContain("0.0.1-rolled-back");
+
+    // Put the tree back the way npm would have it, so later tests in this file
+    // see the fixture they expect.
+    await installNodeProject(project.dir);
+  }, 600_000);
 
   it("proposes a reviewable diff and writes nothing until asked", async () => {
     const name = project.undeclaredDependency as string;

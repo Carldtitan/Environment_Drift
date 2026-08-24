@@ -13,7 +13,17 @@ export interface GitFacts {
   readonly branch: string | null;
   readonly remoteUrl: string | null;
   readonly canonicalRemote: string | null;
+  /**
+   * Fingerprint of the repository this checkout belongs to.
+   *
+   * Named for the remote because that is what identifies a repository once one
+   * exists. Without a remote it falls back to the root commit, which is just
+   * as stable and, unlike "no remote", is actually different between two
+   * different repositories.
+   */
   readonly canonicalRemoteDigest: string;
+  /** First commit in this history, or null in a repository with no commits. */
+  readonly rootCommit: string | null;
   readonly worktreeDirty: boolean;
   readonly dirtyPaths: readonly string[];
 }
@@ -70,9 +80,52 @@ export function canonicalizeRemote(url: string): string | null {
   return `${host}/${path.toLowerCase()}`;
 }
 
-/** Digest of the canonical remote, or of a stable marker when there is none. */
-export function remoteDigest(canonical: string | null): string {
-  return digestBytes(canonical === null ? "iwomc:no-remote" : `iwomc:remote:${canonical}`);
+/**
+ * A stable identity for the repository a checkout belongs to.
+ *
+ * A shared remote is the right answer whenever there is one: two clones of the
+ * same repository are the same project, wherever they sit on disk.
+ *
+ * Without a remote, the old answer was a single constant - which made *every*
+ * local-only repository on a machine the same project, so one project's
+ * contracts could be offered for another's code. The root commit is the
+ * natural replacement: stable across moves and re-clones, and genuinely
+ * different between different repositories.
+ *
+ * A repository with no commits at all has neither, so it falls back to its
+ * path. Identity then changes on the first commit, which `bindProject` handles
+ * by adopting the existing binding rather than orphaning it.
+ */
+export function remoteDigest(
+  canonical: string | null,
+  fallback: { rootCommit?: string | null; projectDir?: string } = {},
+): string {
+  if (canonical !== null) return digestBytes(`iwomc:remote:${canonical}`);
+  if (fallback.rootCommit) return digestBytes(`iwomc:root-commit:${fallback.rootCommit}`);
+  if (fallback.projectDir) {
+    const normalized = fallback.projectDir.replace(/\\/gu, "/").replace(/\/+$/u, "");
+    return digestBytes(
+      `iwomc:local-path:${process.platform === "win32" ? normalized.toLowerCase() : normalized}`,
+    );
+  }
+  return digestBytes("iwomc:no-remote");
+}
+
+/**
+ * The first commit in this history.
+ *
+ * A grafted or merged history can have several roots; the smallest is taken so
+ * two checkouts of the same repository always agree.
+ */
+export async function readRootCommit(dir: string): Promise<string | null> {
+  const result = await git(["rev-list", "--max-parents=0", "HEAD"], dir, 15_000);
+  if (!result.ok) return null;
+  const roots = result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => /^[0-9a-f]{40}$/u.test(line))
+    .sort();
+  return roots[0] ?? null;
 }
 
 export async function readGitFacts(dir: string): Promise<GitFacts> {
@@ -101,6 +154,7 @@ export async function readGitFacts(dir: string): Promise<GitFacts> {
   }
 
   const canonicalRemote = remoteUrl === null ? null : canonicalizeRemote(remoteUrl);
+  const rootCommit = canonicalRemote === null ? await readRootCommit(dir) : null;
 
   const status = await git(["status", "--porcelain=v1", "--untracked-files=normal"], dir);
   const dirtyPaths = status.stdout
@@ -115,10 +169,42 @@ export async function readGitFacts(dir: string): Promise<GitFacts> {
     branch,
     remoteUrl,
     canonicalRemote,
-    canonicalRemoteDigest: remoteDigest(canonicalRemote),
+    canonicalRemoteDigest: remoteDigest(canonicalRemote, { rootCommit, projectDir: dir }),
+    rootCommit,
     worktreeDirty: dirtyPaths.length > 0,
     dirtyPaths,
   };
+}
+
+export interface HeadState {
+  readonly commit: string | null;
+  readonly branch: string | null;
+}
+
+/**
+ * Just the revision and branch.
+ *
+ * `readGitFacts` also runs `git status`, which walks the whole worktree. The
+ * watcher asks for the revision on every sweep and for the dirty flag only
+ * when something actually changed, so a large repository does not pay for a
+ * full status scan once a minute.
+ */
+export async function readHeadState(dir: string): Promise<HeadState> {
+  const head = await git(["rev-parse", "HEAD"], dir, 10_000);
+  if (!head.ok) return { commit: null, branch: null };
+  const branchResult = await git(["rev-parse", "--abbrev-ref", "HEAD"], dir, 10_000);
+  const branchName = branchResult.ok ? branchResult.stdout.trim() : "";
+  return {
+    commit: head.stdout.trim() || null,
+    branch: branchName.length > 0 && branchName !== "HEAD" ? branchName : null,
+  };
+}
+
+/** True when the worktree has uncommitted or untracked changes. */
+export async function readWorktreeDirty(dir: string): Promise<boolean> {
+  const status = await git(["status", "--porcelain=v1", "--untracked-files=normal"], dir);
+  if (!status.ok) return false;
+  return status.stdout.split("\n").some((line) => line.trim().length > 0);
 }
 
 /** Repository-relative POSIX path of `dir` inside its repository. */
@@ -130,6 +216,24 @@ export function subdirectoryOf(repositoryRoot: string, dir: string): string {
   if (targetKey === rootKey) return ".";
   if (!targetKey.startsWith(`${rootKey}/`)) return ".";
   return target.slice(root.length + 1);
+}
+
+/**
+ * Turn anything Git understands into a full commit sha.
+ *
+ * People type what `git log --oneline` shows them - a short hash - and they
+ * also reasonably type `HEAD~1`, a branch name, or a tag. Requiring a full
+ * forty-character sha would be technically defensible and practically useless.
+ * Returns null when the checkout does not know the reference.
+ */
+export async function expandCommit(dir: string, reference: string): Promise<string | null> {
+  const trimmed = reference.trim();
+  if (trimmed.length === 0) return null;
+  // `^{commit}` makes this fail on a tree or a blob rather than returning one.
+  const result = await git(["rev-parse", "--verify", "--quiet", `${trimmed}^{commit}`], dir, 10_000);
+  if (!result.ok) return null;
+  const sha = result.stdout.trim();
+  return /^[0-9a-f]{40}$/u.test(sha) ? sha : null;
 }
 
 /** True when a commit exists in this checkout. */

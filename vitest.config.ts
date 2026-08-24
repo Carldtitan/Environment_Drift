@@ -16,13 +16,19 @@ export default defineConfig({
     hookTimeout: 120_000,
     pool: "forks",
     reporters: process.env["CI"] ? ["default"] : ["dot"],
-    exclude: ["**/node_modules/**", "**/dist/**", "apps/console/**", "artifacts/**"],
+    // The console's build output is excluded, not its source: its pure
+    // helpers carry real logic and deserve tests like anything else.
+    exclude: ["**/node_modules/**", "**/dist/**", "artifacts/**"],
     projects: [
       {
         extends: true,
         test: {
           name: "unit",
-          include: ["packages/*/src/**/*.test.ts", "apps/cli/src/**/*.test.ts"],
+          include: [
+            "packages/*/src/**/*.test.ts",
+            "apps/cli/src/**/*.test.ts",
+            "apps/console/src/**/*.test.ts",
+          ],
         },
       },
       {

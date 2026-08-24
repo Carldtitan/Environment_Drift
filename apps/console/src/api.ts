@@ -281,6 +281,52 @@ export interface DriftView {
   }[];
 }
 
+export interface PackageEvent {
+  id: string;
+  seq: number;
+  at: string;
+  window: { from: string; to: string };
+  ecosystem: string;
+  manager: string;
+  name: string;
+  fromVersion: string | null;
+  toVersion: string | null;
+  kind: "installed" | "upgraded" | "downgraded" | "removed";
+  commit: string | null;
+  branch: string | null;
+  source: "watched" | "swept" | "imported";
+  cause?: { argv: string[]; confidence: string };
+}
+
+export interface PointInTimeState {
+  at: string;
+  commit: string | null;
+  packages: { ecosystem: string; manager: string; name: string; version: string; since?: string }[];
+  replayedEvents: number;
+  coverage: { area: string; reason: string; remediation?: string }[];
+}
+
+export interface CommitNotObserved {
+  kind: "commit_not_observed";
+  commit: string;
+  message: string;
+}
+
+export interface TimelineView {
+  available: boolean;
+  detail?: string;
+  timeline?: {
+    anchor: { at: string; commit: string | null };
+    state: PointInTimeState | CommitNotObserved;
+    recentEvents: PackageEvent[];
+    totalEvents: number;
+    memory: {
+      status: { status: string; detail: string; endpoint: string | null };
+      entries: { id: string; title: string; text: string; at: string | null; position: string }[];
+    } | null;
+  } | null;
+}
+
 export interface CapabilityView {
   adapters:
     | {
@@ -315,6 +361,14 @@ export const api = {
   audit: () => request<AuditView>("/api/audit"),
   settings: () => request<SettingsView>("/api/settings"),
   capabilities: () => request<CapabilityView>("/api/capabilities"),
+  timeline: (projectId: string | null, query: { at?: string; commit?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("projectId", projectId);
+    if (query.commit) params.set("commit", query.commit);
+    else if (query.at) params.set("at", query.at);
+    const suffix = params.toString();
+    return request<TimelineView>(`/api/timeline${suffix ? `?${suffix}` : ""}`);
+  },
 
   createJob: (input: { projectId: string; deviceId: string; action: string; contractId?: string }) =>
     request<{ job: Job["request"] }>("/api/jobs", { method: "POST", body: JSON.stringify(input) }),

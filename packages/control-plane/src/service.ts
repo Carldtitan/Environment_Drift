@@ -508,6 +508,10 @@ export class ControlPlaneService {
   pollJobs(principal: DevicePrincipal): RescueRequestV1[] {
     this.require(principal, principal.workspaceId, "developer");
     const now = this.#now();
+    // Devices poll continuously, which makes this the natural place to retire
+    // work nobody collected. A job whose device never came back should read as
+    // expired, not as still pending.
+    this.store.expireStaleJobs(now);
     const jobs = this.store.listJobsForDevice(principal.workspaceId, principal.device.id, now);
     for (const job of jobs) {
       if (job.state === "queued") {

@@ -79,6 +79,31 @@ export interface MemoryPort {
     query: string;
     limit: number;
   }): Promise<{ hits: MemoryHit[]; status: MemoryStatus }>;
+  /**
+   * What the agent was doing around an instant.
+   *
+   * The package log says a dependency moved from 4.18.2 to 5.1.0 between two
+   * reads. It cannot say why. Claude-Mem can, because it recorded the session
+   * that was running at the time. The two are merged for display and never for
+   * decision: memory is narration beside the deterministic record, never a
+   * substitute for it, and a timeline renders identically when memory is down.
+   */
+  timeline(input: {
+    anchor: string;
+    depthBefore: number;
+    depthAfter: number;
+    projectPseudonym?: string;
+  }): Promise<{ entries: MemoryTimelineEntry[]; status: MemoryStatus }>;
+}
+
+export interface MemoryTimelineEntry {
+  readonly id: string;
+  readonly title: string;
+  readonly text: string;
+  readonly at: string | null;
+  /** Where the entry sits relative to the anchor instant. */
+  readonly position: "before" | "at" | "after";
+  readonly source: "claude-mem";
 }
 
 // ---------------------------------------------------------------------------

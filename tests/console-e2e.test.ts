@@ -3,7 +3,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
-import { createNodeProject, createSandbox, runIwomc, type NodeProjectResult, type Sandbox } from "@iwomc/testkit";
+import {
+  createNodeProject,
+  createSandbox,
+  installUndeclaredPackage,
+  runIwomc,
+  type NodeProjectResult,
+  type Sandbox,
+} from "@iwomc/testkit";
 import { cliEntryPoint } from "@iwomc/testkit";
 
 /**
@@ -180,28 +187,133 @@ describe("the Rescue Console in a browser", () => {
     await page.context().close();
   }, 300_000);
 
-  it("revokes a device and the device immediately loses access", async () => {
+  it("shows the package timeline, with narration kept separate from the record", async () => {
+    // Record a real change first, so the screen is rendering the device's own
+    // log rather than an empty state. The first sweep establishes what was
+    // already installed; the second sees the package appear.
+    await runIwomc(["sweep", "--json"], { cwd: project.dir, env: sandbox.env });
+    const appeared = `console-only-${Math.random().toString(36).slice(2, 8)}`;
+    await installUndeclaredPackage(project.dir, appeared, "3.2.1");
+    const sweep = await runIwomc(["sweep", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(sweep.json<{ events: { name: string }[] }>().events.map((event) => event.name)).toEqual([
+      appeared,
+    ]);
+
     const page = await open();
-    await page.goto(`${origin}/#/team`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".record", { timeout: 30_000 });
-
-    const revoke = page.locator(".btn--danger", { hasText: "Revoke" }).first();
-    await revoke.click();
-    await expect
-      .poll(async () => {
-        const team = await apiGet<{ devices: { state: string }[] }>("/api/team");
-        return team.devices.every((device) => device.state === "revoked");
-      }, { timeout: 30_000 })
-      .toBe(true);
-
-    // The revoked credential is refused by the device-facing API.
-    const deviceToken = await readDeviceToken();
-    const response = await fetch(`${origin}/api/jobs/poll`, {
-      headers: { authorization: `Bearer ${deviceToken}` },
+    await page.locator('.rail__nav a[href="#/timeline"], .rail__nav [data-route="timeline"]').first().click().catch(async () => {
+      await page.goto(`${origin}/#/timeline`, { waitUntil: "networkidle" });
     });
-    expect(response.status).toBe(401);
+    await page.waitForSelector(".split", { timeout: 30_000 });
 
+    const overview = await apiGet<{ selectedProjectId: string | null }>("/api/overview");
+    const api = await apiGet<{
+      available: boolean;
+      timeline: { totalEvents: number; state: { packages: { name: string }[] } } | null;
+    }>(`/api/timeline?projectId=${encodeURIComponent(overview.selectedProjectId ?? "")}`);
+    expect(api.available).toBe(true);
+
+    // The page must not claim a package the API did not send.
+    const body = (await page.locator("body").textContent()) ?? "";
+    const packageCount = api.timeline?.state.packages.length ?? 0;
+    expect(body).toContain(`${packageCount} package${packageCount === 1 ? "" : "s"} installed`);
+
+    // The recorded change is on screen, with its version and its kind in words.
+    const changed = (await page.locator(".split .card").first().textContent()) ?? "";
+    expect(changed).toContain(appeared);
+    expect(changed).toContain("3.2.1");
+    expect(changed).toContain("installed");
+
+    // Two panes, never blended: the deterministic record and the narration.
+    expect(await page.locator(".split .card").count()).toBe(2);
+    const headings = await page.locator(".split .card__head h2").allTextContents();
+    expect(headings).toEqual(["What changed", "What the agent was doing"]);
+
+    // Memory is switched off in this sandbox, so the narration pane must say
+    // so rather than showing a placeholder that looks like real history.
+    const narration = (await page.locator(".split .card").nth(1).textContent()) ?? "";
+    expect(narration.toLowerCase()).toMatch(/not configured|disconnected|no observations/u);
+
+    await page.screenshot({ path: join(SHOT_DIR, "timeline.png"), fullPage: true });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      "the timeline must not scroll sideways",
+    ).toBe(true);
     await page.context().close();
+  }, 300_000);
+
+  it("says a revision it never observed is unobserved, rather than guessing", async () => {
+    const page = await open();
+    await page.goto(`${origin}/#/timeline`, { waitUntil: "networkidle" });
+    await page.waitForSelector(".field-row", { timeout: 30_000 });
+
+    await page.locator('.field-row input[type="text"]').fill("f".repeat(40));
+    await page.locator(".field-row .btn--primary").click();
+    await page.waitForSelector(".empty", { timeout: 30_000 });
+
+    const text = (await page.locator(".empty").textContent()) ?? "";
+    expect(text).toContain("never observed here");
+    expect(text).not.toContain("nearest");
+    await page.context().close();
+  }, 300_000);
+
+  it("shows a team where one machine has drifted from the rest", async () => {
+    // A single capture cannot tell you whether the team is running the same
+    // software. Several captures of one revision can, and that comparison is
+    // the earliest warning a team gets - so it has to reach the screen the
+    // team actually looks at.
+    const page = await open();
+    await page.goto(`${origin}/#/contracts`, { waitUntil: "networkidle" });
+    await page.waitForSelector(".doc", { timeout: 30_000 });
+
+    const single = (await page.locator("body").textContent()) ?? "";
+    expect(
+      single,
+      "one capture is nothing to compare, and must not be shown as agreement",
+    ).not.toContain("How the team's machines compare");
+    await page.context().close();
+
+    // A second capture of the same revision from a machine that has something
+    // the first did not. This goes through the ordinary path - a real capture,
+    // really signed, really published - because the control plane refuses a
+    // contract whose signature does not match its contents, and rightly so.
+    const drifted = `only-on-one-machine-${Math.random().toString(36).slice(2, 8)}`;
+    await installUndeclaredPackage(project.dir, drifted, "9.9.9");
+    const second = await runIwomc(["capture", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(second.exitCode, second.stderr).toBe(0);
+
+    await expect
+      .poll(
+        async () => {
+          const overview = await apiGet<{ selectedProjectId: string | null }>("/api/overview");
+          const listed = await apiGet<{ contracts: { contract: { source: { commit: string } } }[] }>(
+            `/api/contracts?projectId=${encodeURIComponent(overview.selectedProjectId ?? "")}`,
+          );
+          const commits = listed.contracts.map((entry) => entry.contract.source.commit);
+          return commits.filter((commit) => commit === commits[0]).length;
+        },
+        { timeout: 60_000 },
+      )
+      .toBeGreaterThanOrEqual(2);
+
+    const withTeam = await open();
+    await withTeam.goto(`${origin}/#/contracts`, { waitUntil: "networkidle" });
+    await withTeam.waitForSelector(".record", { timeout: 30_000 });
+    const body = (await withTeam.locator("body").textContent()) ?? "";
+
+    expect(body).toContain("How the team's machines compare");
+    expect(body).toContain(drifted);
+    // The package exists in one capture and not the other, which is the whole
+    // point: it is the difference, not a version bump.
+    expect(body).toContain("not required");
+    // It reports the disagreement; it does not decide who is right.
+    expect(body).toContain("does not know which machine is right");
+
+    await withTeam.screenshot({ path: join(SHOT_DIR, "team-agreement.png"), fullPage: true });
+    expect(
+      await withTeam.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      "the comparison must not scroll sideways",
+    ).toBe(true);
+    await withTeam.context().close();
   }, 300_000);
 
   it("shows every state with a word, not only a colour", async () => {
@@ -252,6 +364,37 @@ describe("the Rescue Console in a browser", () => {
     expect(overflow, "the page must not scroll sideways on a phone").toBeLessThanOrEqual(2);
     await page.context().close();
   }, 120_000);
+  /**
+   * Deliberately last.
+   *
+   * Revoking the only enrolled device disables the dominant action on every
+   * screen after it, because there is no longer a device to send work to.
+   * That is correct product behaviour, and it makes this test destructive to
+   * the fixture - so it runs once everything else has had a healthy workspace.
+   */
+  it("revokes a device and the device immediately loses access", async () => {
+    const page = await open();
+    await page.goto(`${origin}/#/team`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".record", { timeout: 30_000 });
+
+    const revoke = page.locator(".btn--danger", { hasText: "Revoke" }).first();
+    await revoke.click();
+    await expect
+      .poll(async () => {
+        const team = await apiGet<{ devices: { state: string }[] }>("/api/team");
+        return team.devices.every((device) => device.state === "revoked");
+      }, { timeout: 30_000 })
+      .toBe(true);
+
+    // The revoked credential is refused by the device-facing API.
+    const deviceToken = await readDeviceToken();
+    const response = await fetch(`${origin}/api/jobs/poll`, {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(response.status).toBe(401);
+
+    await page.context().close();
+  }, 300_000);
 });
 
 async function readDeviceToken(): Promise<string> {

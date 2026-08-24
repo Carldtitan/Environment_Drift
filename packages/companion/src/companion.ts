@@ -14,6 +14,7 @@ import {
   type EnvironmentContractV1,
   type EnvironmentReceiptV1,
   type IntegrationStatus,
+  type PackageEventV1,
   type ProofCommand,
   type RescueEvent,
   type SupportLevel,
@@ -30,8 +31,25 @@ import { applyPromotion, proposePromotion, type PromotionProposal } from "./prom
 import { LocalFreshDirectoryVerifier } from "./verify-local.js";
 import { loadConfig, validateIntegrationConfig, type IntegrationReport, type IwomcConfig } from "./config.js";
 import { probe } from "./exec.js";
-import type { MemoryPort, VerifierPort } from "./ports.js";
-import { NotAGitRepositoryError } from "./git.js";
+import type { MemoryPort, MemoryStatus, MemoryTimelineEntry, VerifierPort } from "./ports.js";
+import { NotAGitRepositoryError, expandCommit } from "./git.js";
+import { PackageWatcher, RecorderBusyError, type SweepResult, type WatchOptions } from "./watch.js";
+import {
+  diffAt,
+  diffCommits,
+  isCommitNotObserved,
+  stateAt,
+  stateAtCommit,
+  type CommitNotObserved,
+  type HistoryResult,
+} from "./history.js";
+import type { StateDiff } from "./timeline.js";
+import {
+  chooseContract,
+  coveredPlatforms,
+  type ContractChoice,
+} from "./choose-contract.js";
+import { agreementFor, type Agreement } from "./agreement.js";
 
 /**
  * The Companion service.
@@ -95,6 +113,12 @@ export interface StatusResult {
   readonly exactContract: ContractSummary | null;
   readonly nearestContract: ContractSummary | null;
   readonly canRescueNow: { possible: boolean; reason: string };
+  /**
+   * Where the team's captures of this revision differ, or null when fewer
+   * than two are comparable. Null means "nothing to compare", never "checked
+   * and found to agree".
+   */
+  readonly agreement: Agreement | null;
   readonly recentRuns: readonly {
     id: string;
     state: string;
@@ -106,6 +130,33 @@ export interface StatusResult {
   readonly memory: { status: IntegrationStatus; detail: string };
   readonly driftCount: number;
   readonly home: string;
+}
+
+export interface TimelineResult {
+  readonly project: ProjectSummary;
+  readonly anchor: { readonly at: string; readonly commit: string | null };
+  /** Deterministic. Identical on any machine holding the same log. */
+  readonly state: HistoryResult;
+  readonly recentEvents: readonly PackageEventV1[];
+  readonly totalEvents: number;
+  /**
+   * Narration, not evidence. Null when the integration is not configured, and
+   * carries a `disconnected` status when the worker is not running - the rest
+   * of the result is unaffected either way.
+   */
+  readonly memory: {
+    readonly status: MemoryStatus;
+    readonly entries: readonly MemoryTimelineEntry[];
+  } | null;
+}
+
+export interface TimelineDiffResult {
+  readonly project: ProjectSummary;
+  readonly from: { readonly at: string | null; readonly commit: string | null };
+  readonly to: { readonly at: string | null; readonly commit: string | null };
+  /** Null when a requested revision was never observed on this device. */
+  readonly diff: StateDiff | null;
+  readonly missing: readonly CommitNotObserved[];
 }
 
 export class Companion {
@@ -161,9 +212,14 @@ export class Companion {
 
     const proof = project ? this.store.getProof(project.binding.projectId) : null;
     const contracts = project ? this.store.listContracts(project.binding.projectId) : [];
-    const exact = project
-      ? contracts.find((entry) => entry.commit === project.git.commit) ?? null
-      : null;
+    // The same choice `rescue` makes, so the two can never disagree about which
+    // contract applies here. `find` would have taken whichever was stored
+    // first, which on a team is arbitrary.
+    const forThisRevision = project
+      ? contracts.filter((entry) => entry.commit === project.git.commit)
+      : [];
+    const choice = chooseContract(forThisRevision, currentPlatform());
+    const exact = choice.chosen;
     const nearest = project && !exact ? (contracts[0] ?? null) : null;
 
     const memoryStatus = this.#memory
@@ -203,7 +259,11 @@ export class Companion {
       contracts: contracts.map(summarizeContract),
       exactContract: exact ? summarizeContract(exact) : null,
       nearestContract: nearest ? summarizeContract(nearest) : null,
-      canRescueNow: rescueReadiness(project, exact, proof),
+      canRescueNow: rescueReadiness(project, exact, proof, choice),
+      // Two teammates who captured the same revision and got different answers
+      // is the earliest signal a team gets that its machines have drifted
+      // apart - and it shows up before anything breaks.
+      agreement: agreementFor(forThisRevision, currentPlatform()),
       recentRuns: runs.map((run) => ({
         id: run.id,
         state: run.state,
@@ -358,11 +418,29 @@ export class Companion {
       this.store.saveProof(project.binding.projectId, proof, this.#now());
     }
 
+    // Bring the log up to date first, so a capture always leaves behind a
+    // record of what this revision looked like. Without it, someone who runs
+    // `iwomc capture` and then asks `iwomc timeline <that commit>` is told the
+    // revision was never observed - moments after IWOMC observed it.
+    //
+    // This respects the recorder lease: when a resident `iwomc watch` already
+    // holds the project, it is already current and this does nothing.
+    await this.#recordCurrentState(project.projectDir).catch(() => undefined);
+
+    // What the log recorded while this exact revision was checked out. A
+    // capture that only reads the present cannot tell an install from a
+    // transitive dependency, and cannot see a downgrade at all.
+    const recordedChanges = this.store.listPackageEventsForCommit(
+      project.binding.projectId,
+      project.git.commit,
+    );
+
     const result = await captureEnvironment({
       project,
       device: this.device,
       registry: this.registry,
       proof,
+      ...(recordedChanges.length > 0 ? { recordedChanges } : {}),
       ...(options.agentSession ? { agentSession: options.agentSession } : {}),
       ...(options.allowSourceUpload ? { policyOverrides: { allowSourceUpload: true } } : {}),
       now: this.#now,
@@ -578,15 +656,84 @@ export class Companion {
     const proof = this.store.getProof(project.binding.projectId);
 
     let stored: StoredContract | null;
+    let choice: ContractChoice<StoredContract> | null = null;
     if (options.contractId) {
       stored = this.store.getContract(options.contractId);
     } else {
-      stored = this.store.findContractsForCommit(project.binding.projectId, project.git.commit)[0] ?? null;
+      // Several teammates may have captured this revision, from different
+      // machines and to different levels of checking. Pick the one that can
+      // actually run here and has the most evidence behind it, not whichever
+      // happened to be stored last.
+      choice = chooseContract(
+        this.store.findContractsForCommit(project.binding.projectId, project.git.commit),
+        currentPlatform(),
+      );
+      stored = choice.chosen;
+    }
+
+    if (!stored && choice && choice.otherPlatforms.length > 0) {
+      // The revision *is* covered - just not for this machine. Saying "no
+      // contract exists" would send someone to ask for a capture that has
+      // already happened.
+      const platforms = coveredPlatforms(choice.otherPlatforms);
+      const here = currentPlatform();
+      return {
+        state: "blocked",
+        runId: null,
+        blocker: blocker(
+          "platform_mismatch",
+          `${choice.otherPlatforms.length === 1 ? "A contract exists" : `${choice.otherPlatforms.length} contracts exist`} for ${project.git.commit.slice(0, 12)}, but ${
+            choice.otherPlatforms.length === 1 ? "it targets" : "they target"
+          } ${platforms.join(", ")} and this machine is ${here.os}/${here.arch}.`,
+          `Ask a teammate on ${here.os}/${here.arch} to run \`iwomc capture\` at this revision, then try again.`,
+          { coveredPlatforms: platforms, thisPlatform: `${here.os}/${here.arch}` },
+        ),
+      };
+    }
+
+    if (!stored && choice && choice.withdrawn.length > 0) {
+      // Every contract for this revision was rejected, revoked, or replaced.
+      // That is a decision someone made, not an absence.
+      const states = [...new Set(choice.withdrawn.map((entry) => entry.state))].sort();
+      return {
+        state: "blocked",
+        runId: null,
+        blocker: blocker(
+          "contract_not_approved",
+          `Every contract for ${project.git.commit.slice(0, 12)} has been ${states.join(" or ")}.`,
+          "Ask a teammate whose checkout works to capture a new one at this revision.",
+          { withdrawnStates: states },
+        ),
+      };
     }
 
     if (!stored) {
       const contracts = this.store.listContracts(project.binding.projectId, 5);
       const nearest = contracts[0];
+
+      // A contract for this exact commit under a different project means the
+      // two checkouts do not share a Git remote. Telling someone to "ask a
+      // teammate to capture" when the capture already happened sends them
+      // after the wrong problem entirely.
+      const elsewhere = this.store
+        .findContractsForCommitAnywhere(project.git.commit)
+        .find((entry) => entry.projectId !== project.binding.projectId);
+
+      if (elsewhere) {
+        return {
+          state: "blocked",
+          runId: null,
+          blocker: blocker(
+            "remote_mismatch",
+            `A contract exists for ${project.git.commit.slice(0, 12)}, but it was captured against a different Git remote, so IWOMC treats it as a different project.`,
+            project.git.remoteUrl === null
+              ? "This checkout has no Git remote configured. Add the shared remote with `git remote add origin <url>` so both checkouts fingerprint the same project."
+              : `Check that both checkouts use the same remote, then run \`iwomc status\`. To apply it anyway, run \`iwomc rescue --contract ${elsewhere.id}\`.`,
+            { otherContractId: elsewhere.id, remoteConfigured: project.git.remoteUrl !== null },
+          ),
+        };
+      }
+
       return {
         state: "blocked",
         runId: null,
@@ -709,9 +856,43 @@ export class Companion {
       status: bindings.length > 0 ? "ok" : "warn",
       detail:
         bindings.length > 0
-          ? `${bindings.length} checkout(s) registered on this device.`
+          ? `${plural(bindings.length, "checkout")} registered on this device.`
           : "No checkouts are registered yet.",
       ...(bindings.length === 0 ? { nextAction: "Run `iwomc init` inside a Git checkout." } : {}),
+    });
+
+    // The package log grows for as long as a recorder runs. Its size should
+    // never be a surprise found by someone hunting for disk space.
+    const footprint = bindings.reduce(
+      (total, binding) => {
+        const one = this.store.packageLogFootprint(binding.projectId);
+        return {
+          events: total.events + one.events,
+          baselines: total.baselines + one.baselines,
+          approximateBytes: total.approximateBytes + one.approximateBytes,
+        };
+      },
+      { events: 0, baselines: 0, approximateBytes: 0 },
+    );
+    const logMegabytes = footprint.approximateBytes / (1024 * 1024);
+    checks.push({
+      name: "Package log",
+      // Large is not wrong - it means a lot has been recorded - so this warns
+      // rather than failing, and says what to do about it.
+      status: logMegabytes > 200 ? "warn" : "ok",
+      detail:
+        footprint.events === 0
+          ? "No package changes recorded yet. Run `iwomc watch` to start recording."
+          : `${plural(footprint.events, "change")} and ${plural(
+              footprint.baselines,
+              "snapshot",
+            )} recorded, ${logMegabytes < 1 ? "under 1 MB" : `about ${logMegabytes.toFixed(0)} MB`} on disk.`,
+      ...(logMegabytes > 200
+        ? {
+            nextAction:
+              "This is a lot of history. Older snapshots are thinned automatically; if you need the space back, remove the project binding and re-add it.",
+          }
+        : {}),
     });
 
     if (dir) {
@@ -753,6 +934,237 @@ export class Companion {
       memory: { status: memory.status, detail: memory.detail },
       auditChain: audit,
     };
+  }
+
+  // -- the package log ----------------------------------------------------
+
+  /**
+   * Start watching a bound checkout in the background.
+   *
+   * The caller owns the returned watcher and must stop it; the watch session
+   * is only closed on `stop`, and an unclosed session is what later folds read
+   * as "the watcher may still have been running", so leaking one degrades the
+   * honesty of coverage reporting rather than crashing anything.
+   */
+  async watch(dir: string, options: WatchOptions = {}): Promise<{ watcher: PackageWatcher; project: ProjectSummary }> {
+    const project = await this.#requireProject(dir);
+    const watcher = new PackageWatcher({
+      store: this.store,
+      projectId: project.binding.projectId,
+      projectDir: project.projectDir,
+      registry: this.registry,
+      options: { now: this.#now, ...options },
+    });
+    await watcher.start();
+    this.store.appendAudit({
+      id: randomUUID(),
+      workspaceId: project.binding.workspaceId,
+      at: this.#now(),
+      actor: this.device.personId,
+      action: "watch.started",
+      subject: project.binding.projectId,
+      detail: { commit: project.git.commit },
+    });
+    return { watcher, project: summarizeProject(project) };
+  }
+
+  /**
+   * Watch every checkout registered on this device.
+   *
+   * A developer usually has more than one project open, and a recorder that
+   * only covers the directory it was started in silently leaves the others
+   * with no history at all. Bindings whose checkout has since been deleted or
+   * moved are reported rather than skipped in silence.
+   */
+  async watchAll(options: WatchOptions = {}): Promise<{
+    watchers: { projectName: string; projectId: string; watcher: PackageWatcher }[];
+    unavailable: { projectName: string; checkoutPath: string; reason: string }[];
+  }> {
+    const watchers: { projectName: string; projectId: string; watcher: PackageWatcher }[] = [];
+    const unavailable: { projectName: string; checkoutPath: string; reason: string }[] = [];
+
+    for (const binding of this.store.listBindings()) {
+      try {
+        const started = await this.watch(binding.checkoutPath, options);
+        watchers.push({
+          projectName: binding.projectName,
+          projectId: binding.projectId,
+          watcher: started.watcher,
+        });
+      } catch (error) {
+        // A project someone else is already recording is not a problem to
+        // report as breakage; it is one this process simply skips.
+        unavailable.push({
+          projectName: binding.projectName,
+          checkoutPath: binding.checkoutPath,
+          reason:
+            error instanceof RecorderBusyError
+              ? "Already being recorded by another IWOMC process."
+              : error instanceof Error
+                ? error.message
+                : String(error),
+        });
+      }
+    }
+    return { watchers, unavailable };
+  }
+
+  /**
+   * One observation now, without staying resident.
+   *
+   * When a resident recorder already holds this project, this reads instead of
+   * writing and says so. Recording the same change from two processes would
+   * put it in the history twice, at two slightly different moments.
+   */
+  async sweepOnce(dir: string): Promise<{
+    result: SweepResult;
+    project: ProjectSummary;
+    recorded: boolean;
+    heldBy?: { startedAt: string; lastSeenAt: string };
+  }> {
+    const project = await this.#requireProject(dir);
+    const watcher = new PackageWatcher({
+      store: this.store,
+      projectId: project.binding.projectId,
+      projectDir: project.projectDir,
+      registry: this.registry,
+      options: { now: this.#now },
+    });
+
+    try {
+      // A one-shot sweep still opens and closes a watch session, so the covered
+      // interval it produces is a true statement about when IWOMC was looking.
+      //
+      // The result is the one `start` returns. That first sweep is the one that
+      // compares the stored state against the disk; a second sweep would compare
+      // the disk against itself and report nothing.
+      const result = await watcher.start();
+      await watcher.stop("one-shot sweep");
+      return { result, project: summarizeProject(project), recorded: true };
+    } catch (error) {
+      if (!(error instanceof RecorderBusyError)) throw error;
+      const result = await watcher.observe();
+      return {
+        result,
+        project: summarizeProject(project),
+        recorded: false,
+        ...(error.heldBy ? { heldBy: error.heldBy } : {}),
+      };
+    }
+  }
+
+  /**
+   * What was installed at a moment, and - separately - what the agent was
+   * doing then.
+   *
+   * The two halves never mix. `state` is replayed from IWOMC's own log and is
+   * the same on every machine that holds the log. `memory` is narration and is
+   * absent whenever the Claude-Mem worker is not running, which changes how
+   * much the answer explains but never what the answer is.
+   */
+  async timeline(
+    dir: string,
+    query: { at?: string; commit?: string; explain?: boolean } = {},
+  ): Promise<TimelineResult> {
+    const project = await this.#requireProject(dir);
+    const projectId = project.binding.projectId;
+    const anchorCommit = query.commit
+      ? await this.#resolveCommitReference(project.projectDir, query.commit)
+      : null;
+    const requestedAt = query.at === undefined ? undefined : normalizeInstant(query.at, "--at");
+
+    const state = anchorCommit
+      ? stateAtCommit(this.store, projectId, anchorCommit)
+      : stateAt(this.store, projectId, requestedAt ?? this.#now());
+
+    const anchorAt = isCommitNotObserved(state) ? (requestedAt ?? this.#now()) : state.at;
+    const seq = anchorCommit
+      ? (this.store.seqAtCommit(projectId, anchorCommit) ?? this.store.seqAtTime(projectId, anchorAt))
+      : this.store.seqAtTime(projectId, anchorAt);
+    const recentEvents = this.store.listPackageEvents(projectId, {
+      fromSeq: Math.max(0, seq - 24),
+      toSeq: seq,
+      limit: 25,
+    });
+
+    let memory: TimelineResult["memory"] = null;
+    if (query.explain !== false && this.#memory) {
+      const result = await this.#memory.timeline({
+        anchor: anchorAt,
+        depthBefore: 5,
+        depthAfter: 5,
+        projectPseudonym: projectPseudonym(projectId),
+      });
+      memory = { status: result.status, entries: result.entries };
+    }
+
+    return {
+      project: summarizeProject(project),
+      anchor: { at: anchorAt, commit: anchorCommit },
+      state,
+      recentEvents,
+      totalEvents: this.store.countPackageEvents(projectId),
+      memory,
+    };
+  }
+
+  /** What would have to change to turn one point in time into another. */
+  async timelineDiff(
+    dir: string,
+    from: { at?: string; commit?: string },
+    to: { at?: string; commit?: string },
+  ): Promise<TimelineDiffResult> {
+    const project = await this.#requireProject(dir);
+    const projectId = project.binding.projectId;
+
+    if (from.commit && to.commit) {
+      const left = await this.#resolveCommitReference(project.projectDir, from.commit);
+      const right = await this.#resolveCommitReference(project.projectDir, to.commit);
+      const result = diffCommits(this.store, projectId, left, right);
+      return {
+        project: summarizeProject(project),
+        from: { at: null, commit: left },
+        to: { at: null, commit: right },
+        diff: result.diff,
+        missing: result.missing,
+      };
+    }
+
+    const fromAt = from.at === undefined ? new Date(0).toISOString() : normalizeInstant(from.at, "--since");
+    const toAt = to.at === undefined ? this.#now() : normalizeInstant(to.at, "--until");
+    return {
+      project: summarizeProject(project),
+      from: { at: fromAt, commit: null },
+      to: { at: toAt, commit: null },
+      diff: diffAt(this.store, projectId, fromAt, toAt),
+      missing: [],
+    };
+  }
+
+  /**
+   * Take one observation, unless a resident recorder is already doing it.
+   *
+   * Failures here are deliberately not fatal to the caller: capture's job is
+   * to produce a contract, and a package log that could not be updated is a
+   * reduced answer, not a broken one.
+   */
+  async #recordCurrentState(projectDir: string): Promise<void> {
+    await this.sweepOnce(projectDir);
+  }
+
+  /**
+   * Turn what a person typed into a full commit sha.
+   *
+   * `git log --oneline` prints short hashes, so that is what people paste. A
+   * branch name or `HEAD~1` is just as reasonable. When Git in this checkout
+   * cannot resolve it, the original text is returned unchanged so the answer
+   * is "this revision was never observed here" naming what they asked for,
+   * rather than an error about formatting.
+   */
+  async #resolveCommitReference(projectDir: string, reference: string): Promise<string> {
+    const trimmed = reference.trim();
+    if (/^[0-9a-f]{40}$/u.test(trimmed)) return trimmed;
+    return (await expandCommit(projectDir, trimmed)) ?? trimmed;
   }
 
   // -- reads --------------------------------------------------------------
@@ -907,6 +1319,7 @@ function rescueReadiness(
   project: ProjectContext | null,
   exact: StoredContract | null,
   proof: ProofCommand | null,
+  choice?: ContractChoice<StoredContract>,
 ): { possible: boolean; reason: string } {
   if (!project) {
     return { possible: false, reason: "No IWOMC project is bound to this directory." };
@@ -915,6 +1328,22 @@ function rescueReadiness(
     return {
       possible: false,
       reason: "No proof command is configured and no contract exists for this revision.",
+    };
+  }
+  if (!exact && choice && choice.otherPlatforms.length > 0) {
+    // Someone has covered this revision - on a different kind of machine.
+    // Telling them to capture one would be telling them to repeat work.
+    const here = currentPlatform();
+    return {
+      possible: false,
+      reason: `This revision is covered for ${coveredPlatforms(choice.otherPlatforms).join(", ")}, but not for ${here.os}/${here.arch}. A teammate on ${here.os}/${here.arch} needs to capture it.`,
+    };
+  }
+  if (!exact && choice && choice.withdrawn.length > 0) {
+    const states = [...new Set(choice.withdrawn.map((entry) => entry.state))].sort();
+    return {
+      possible: false,
+      reason: `Every contract for ${project.git.commit.slice(0, 12)} has been ${states.join(" or ")}. A new capture is needed.`,
     };
   }
   if (!exact) {
@@ -956,4 +1385,30 @@ function rescueReadiness(
     possible: true,
     reason: `A ${humanState(exact.state)} contract exists for this exact revision; rescue will apply it and run \`${exact.contract.proof.argv.join(" ")}\`.`,
   };
+}
+
+/**
+ * Accept an instant, or refuse clearly.
+ *
+ * Left unchecked, an unparseable value flows into a string comparison against
+ * ISO timestamps and quietly answers *something* - a confident, wrong-looking
+ * report of an empty project. Someone typing `--at yesterday` deserves to be
+ * told that is not a date, not shown a project with nothing installed.
+ */
+export function normalizeInstant(value: string, flag: string): string {
+  const trimmed = value.trim();
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) {
+    throw new BlockedError({
+      code: "invalid_input",
+      message: `${flag} needs a date and time, and "${value}" is not one.`,
+      nextAction: `Pass something like ${flag} 2026-08-23T14:32:00Z, or omit it for the current state.`,
+    });
+  }
+  return new Date(parsed).toISOString();
+}
+
+/** "1 change", "2 changes" - never "1 change(s)". */
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }

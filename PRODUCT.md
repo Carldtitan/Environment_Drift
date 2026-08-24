@@ -19,6 +19,19 @@ iwomc capture    # on a checkout that works
 iwomc rescue     # on a checkout that does not
 ```
 
+A contract describes one revision. Underneath it, a background recorder keeps
+an append-only log of what was installed, upgraded, downgraded, or removed, and
+when - so IWOMC can also answer a question a snapshot cannot:
+
+```
+iwomc watch                       # record changes as they happen
+iwomc timeline <commit>           # what was installed while that revision was checked out
+iwomc diff <theirs> <yours>       # what separates the two
+```
+
+The log feeds capture, so a contract pins the versions the machine actually
+settled on - including a downgrade, which a snapshot has no way to express.
+
 ## The mechanism, in one sentence
 
 Docker runs the setup a developer wrote down; IWOMC finds the setup an agent
@@ -26,10 +39,11 @@ actually used and the repository forgot to write down, and proves a repair.
 
 ## Who uses it
 
-Small teams — hackathon teams and early-stage teams using coding agents — where
-one person's checkout works, another's does not, and the difference is not in
-the repository. Both a human at a terminal and a coding agent through MCP are
-first-class users; they see the same states and the same words.
+Any team where one person's checkout works, another's does not, and the
+difference is not in the repository. Small teams using coding agents feel it
+most, because an agent installs to unblock itself far more often than a person
+does. Both a human at a terminal and a coding agent through MCP are first-class
+users; they see the same states and the same words.
 
 ## What it must never do
 
@@ -57,6 +71,7 @@ Every stop has a machine-readable blocker code and exactly one next action.
 | `iwomc` CLI | Operate | A person drives capture, verify, rescue, promote from a terminal. |
 | Local MCP server | Operate | A coding agent drives the same services with typed tools. |
 | Rescue Console (hosted) | Operate | A team sees which contract is current, whether a checkout can be rescued now, and asks a device to do it. |
+| `iwomc watch` | Record | A background loop keeps the package log current for the checkouts on this device. |
 
 ## Brand commitments
 
@@ -78,9 +93,22 @@ Every stop has a machine-readable blocker code and exactly one next action.
 - Local fresh-directory verification, producing a real `locally checked`
   attestation.
 - A Modal clean verifier behind a budget ceiling and a source-upload policy.
-- Claude-Mem lifecycle observations through the documented local worker API.
+- Claude-Mem lifecycle observations through the documented local worker API,
+  and its timeline read back beside the package log as narration.
+- A device-local package event log: install, upgrade, downgrade, and removal,
+  each bound to the revision that was checked out and to an honest observation
+  window, with point-in-time and by-revision queries.
 
 ## What is honestly unavailable
+
+The package log is device-local and is not uploaded. A teammate's history
+reaches you through a contract they captured and shared, not by IWOMC serving
+another machine's log; a revision this device never observed is reported as
+unobserved rather than estimated from a nearby one.
+
+Attribution of a change to the command that caused it is only recorded when a
+coding agent reports the command. IWOMC does not scrape the process table, so
+an unattributed change carries no cause rather than a guessed one.
 
 GitHub App sign-in, Postgres, and the object store have no credentials in this
 build. Each is implemented behind its interface with configuration validation

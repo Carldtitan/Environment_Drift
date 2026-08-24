@@ -349,6 +349,7 @@ abstract class PythonAdapterBase implements EnvironmentAdapter {
       systemTools,
       secrets,
       gaps: declaration.gaps,
+      lockedVersions: exactPins(declaration.packages),
     };
   }
 
@@ -497,6 +498,49 @@ abstract class PythonAdapterBase implements EnvironmentAdapter {
           proposedRepair: null,
         });
       }
+    }
+
+    // A distribution the repository *does* declare, at a version the
+    // repository would not install. `pip install --no-deps other==1.0` leaves
+    // exactly this: the file still says one thing, the environment is another,
+    // and a teammate installing from the file gets something that differs.
+    const locked = declared.lockedVersions ?? {};
+    for (const [name, installedVersion] of installed) {
+      if (!declaredNames.has(name)) continue;
+      const lockedVersion = locked[name];
+      if (lockedVersion === undefined || lockedVersion === installedVersion) continue;
+      if (overlay.some((entry) => entry.name === name)) continue;
+
+      const versionSpec = `==${pinExact(installedVersion)}`;
+      const evidenceRefs = bundle.evidence
+        .filter((item) => item.summary.includes(name))
+        .map((item) => item.id);
+
+      overlay.push({ name, versionSpec, evidenceRefs });
+
+      // Replace the declared requirement rather than adding a second one for
+      // the same distribution.
+      const existing = packages.findIndex((entry) => entry.name === name);
+      const requirement = {
+        ecosystem: "python" as const,
+        manager: this.managerName,
+        name,
+        versionSpec,
+        scope: "direct" as const,
+        source: "observed" as const,
+        evidenceRefs,
+        declared: true,
+      };
+      if (existing === -1) packages.push(requirement);
+      else packages[existing] = requirement;
+      drift.push({
+        adapterId: this.manifest.id,
+        kind: "version_mismatch",
+        summary: `${name} is installed here at ${installedVersion}, but the repository pins ${lockedVersion}. A fresh install elsewhere would produce ${lockedVersion}.`,
+        evidenceRefs,
+        affectedDeclaration: declared.files.includes(REQUIREMENTS) ? REQUIREMENTS : PYPROJECT,
+        proposedRepair: null,
+      });
     }
 
     const runtimes: RuntimeRequirement[] = [...declared.runtimes];
@@ -989,3 +1033,23 @@ export class UvAdapter extends PythonAdapterBase {
 export const pipAdapter = new PipAdapter();
 export const uvAdapter = new UvAdapter();
 export { VENV_DIR, REQUIREMENTS, PYPROJECT, UV_LOCK };
+
+/**
+ * Exact versions the repository would install, from declared pins.
+ *
+ * Python has no universal lockfile, but `name==1.2.3` in requirements.txt says
+ * the same thing a lockfile entry does: install this and nothing else. A range
+ * like `>=1.0` is deliberately excluded - it is satisfied by many versions, so
+ * comparing an installed tree against it would report healthy projects as
+ * broken.
+ */
+export function exactPins(
+  packages: readonly { name: string; versionSpec: string }[],
+): Record<string, string> {
+  const pins: Record<string, string> = {};
+  for (const entry of packages) {
+    const match = /^==\s*([^\s,;]+)$/u.exec(entry.versionSpec.trim());
+    if (match) pins[entry.name] = (match[1] as string).trim();
+  }
+  return pins;
+}

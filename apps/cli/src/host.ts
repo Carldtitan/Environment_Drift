@@ -12,8 +12,9 @@ import { EXIT } from "./cli.js";
  * evidence; this service persists only the team workspace, contracts, jobs,
  * audit log, and opaque browser-session hashes.
  *
- * A single Railway service with a mounted volume is deliberately used for the
- * hackathon release. It is a real multi-device server, not a localhost demo.
+ * A single service with a mounted volume is deliberate: it is the smallest
+ * shape that is genuinely multi-device rather than a localhost demo, and it can
+ * be moved behind Postgres without the callers changing.
  */
 export async function runHostedControlPlane(io: CliIo, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const clientId = nonEmpty(env["GITHUB_CLIENT_ID"]);

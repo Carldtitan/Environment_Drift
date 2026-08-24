@@ -2,7 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { assertRedacted, defaultRedactor, RedactionError, type IntegrationStatus, type Redactor } from "@iwomc/contracts";
-import type { LifecycleObservation, MemoryHit, MemoryPort, MemoryStatus } from "@iwomc/companion";
+import type {
+  LifecycleObservation,
+  MemoryHit,
+  MemoryPort,
+  MemoryStatus,
+  MemoryTimelineEntry,
+} from "@iwomc/companion";
 
 /**
  * Claude-Mem integration (R9).
@@ -256,6 +262,68 @@ export class ClaudeMemAdapter implements MemoryPort {
     };
   }
 
+  /**
+   * Observations around an instant, using the worker's own timeline endpoint.
+   *
+   * The anchor is a moment IWOMC already knows deterministically - when a
+   * package version actually changed - so this asks Claude-Mem the one
+   * question it is uniquely able to answer: what was the session doing then.
+   * Nothing here influences what IWOMC materializes or verifies.
+   */
+  async timeline(input: {
+    anchor: string;
+    depthBefore: number;
+    depthAfter: number;
+    projectPseudonym?: string;
+  }): Promise<{ entries: MemoryTimelineEntry[]; status: MemoryStatus }> {
+    const params = new URLSearchParams({
+      anchor: input.anchor,
+      depth_before: String(Math.max(0, Math.min(input.depthBefore, 25))),
+      depth_after: String(Math.max(0, Math.min(input.depthAfter, 25))),
+      format: "json",
+      platformSource: "iwomc",
+    });
+    if (input.projectPseudonym) params.set("project", input.projectPseudonym);
+
+    const result = await this.#request("GET", `/api/timeline?${params.toString()}`);
+    if (!result.ok) {
+      return { entries: [], status: await this.status() };
+    }
+    const body = result.body as
+      | {
+          before?: unknown[];
+          anchor?: unknown;
+          at?: unknown[];
+          after?: unknown[];
+          observations?: unknown[];
+          content?: unknown[];
+        }
+      | null;
+
+    // The worker's own timeline endpoint answers with an MCP content envelope
+    // carrying a rendered markdown table, not a list of observation objects.
+    // Structured keys are still read first, because other worker versions
+    // return them and neither shape should break the view.
+    const entries: MemoryTimelineEntry[] = [
+      ...collect(body?.before, "before"),
+      ...collect(body?.at ?? (body?.anchor === undefined ? [] : [body.anchor]), "at"),
+      ...collect(body?.after, "after"),
+    ];
+    if (entries.length === 0) entries.push(...collect(body?.observations, "at"));
+    if (entries.length === 0) {
+      entries.push(...parseRenderedTimeline(textOfContent(body?.content), input.anchor));
+    }
+
+    return {
+      entries,
+      status: this.#lastStatus ?? {
+        status: "connected" as IntegrationStatus,
+        detail: `Claude-Mem worker responded at ${this.#baseUrl}.`,
+        endpoint: this.#baseUrl,
+      },
+    };
+  }
+
   async #request(
     method: "GET" | "POST",
     path: string,
@@ -317,6 +385,96 @@ function isHit(value: MemoryHit | null): value is MemoryHit {
   return value !== null;
 }
 
+/** Join the text parts of an MCP content envelope. */
+function textOfContent(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part !== "object" || part === null) return "";
+      const record = part as Record<string, unknown>;
+      return typeof record["text"] === "string" ? record["text"] : "";
+    })
+    .join("\n");
+}
+
+const DATE_HEADING = /^#{1,6}\s+(.+?)\s*$/u;
+const TABLE_ROW = /^\|(.+)\|\s*$/u;
+
+/**
+ * Read the worker's rendered timeline table.
+ *
+ * Each row is `| #id | time | glyph | title | tokens |`, grouped under a date
+ * heading, and a repeated time is written as a ditto mark. Anything that does
+ * not parse into an id and a title is skipped rather than guessed at: a
+ * half-read row would be narration IWOMC invented, and this pane exists only
+ * to show what Claude-Mem actually recorded.
+ */
+export function parseRenderedTimeline(text: string, anchor: string): MemoryTimelineEntry[] {
+  if (text.trim().length === 0) return [];
+  const anchorMs = Date.parse(anchor);
+  const entries: MemoryTimelineEntry[] = [];
+  let currentDate: string | null = null;
+  let lastTime: string | null = null;
+
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (line.startsWith("#")) {
+      const heading = DATE_HEADING.exec(line)?.[1] ?? "";
+      // A date heading parses as a date; a section heading does not.
+      if (Number.isFinite(Date.parse(heading))) {
+        currentDate = heading;
+        lastTime = null;
+      }
+      continue;
+    }
+    const row = TABLE_ROW.exec(line);
+    if (!row) continue;
+    const cells = (row[1] as string).split("|").map((cell) => cell.trim());
+    if (cells.length < 4) continue;
+
+    const [idCell, timeCell, , titleCell] = cells;
+    if (idCell === undefined || titleCell === undefined) continue;
+    if (!idCell.startsWith("#")) continue; // header and separator rows
+    const id = idCell.slice(1).trim();
+    if (id.length === 0 || titleCell.length === 0) continue;
+
+    // A ditto mark means "same time as the row above", which is how the
+    // worker renders several observations recorded in the same minute.
+    const time: string | null =
+      timeCell === undefined || timeCell.length === 0 || timeCell === '"' ? lastTime : timeCell;
+    if (time !== null) lastTime = time;
+
+    const parsed = currentDate && time ? Date.parse(`${currentDate} ${time}`) : Number.NaN;
+    const at = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+    const position: MemoryTimelineEntry["position"] =
+      !Number.isFinite(parsed) || !Number.isFinite(anchorMs)
+        ? "at"
+        : parsed < anchorMs
+          ? "before"
+          : parsed > anchorMs
+            ? "after"
+            : "at";
+
+    entries.push({ id, title: titleCell, text: titleCell, at, position, source: "claude-mem" });
+  }
+  return entries;
+}
+
+function collect(raw: unknown, position: MemoryTimelineEntry["position"]): MemoryTimelineEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(toHit)
+    .filter(isHit)
+    .map((hit) => ({
+      id: hit.id,
+      title: hit.title,
+      text: hit.text,
+      at: hit.createdAt,
+      position,
+      source: "claude-mem" as const,
+    }));
+}
+
 /**
  * Keep worker sessions separate by pseudonymous project without placing a
  * token-like identifier on the wire. This is an opaque grouping label, not a
@@ -354,5 +512,9 @@ export class DisabledMemory implements MemoryPort {
 
   async search(): Promise<{ hits: MemoryHit[]; status: MemoryStatus }> {
     return { hits: [], status: await this.status() };
+  }
+
+  async timeline(): Promise<{ entries: MemoryTimelineEntry[]; status: MemoryStatus }> {
+    return { entries: [], status: await this.status() };
   }
 }

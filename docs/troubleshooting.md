@@ -29,12 +29,25 @@ failing proof is `failed`, always.
 ### Binding and revision
 
 **`no_project_binding`** — this checkout is not registered.
-Run `iwomc init` in the directory. IWOMC binds a project to a Git remote
-fingerprint and a subdirectory, not to a path.
+Run `iwomc init` in the directory. IWOMC identifies a project by its repository
+and subdirectory, not by its path, so you can move or re-clone a checkout and
+it stays the same project. With a Git remote, the remote is the fingerprint.
+Without one, the repository's first commit is used instead — two local-only
+repositories are two different projects, not one.
 
 **`remote_mismatch`** / **`subdirectory_mismatch`** — the checkout points at a
 different repository or a different subdirectory than the binding.
 Re-run `iwomc init` from the correct directory.
+
+You will also see `remote_mismatch` when a contract exists for your exact
+commit but was captured against a different remote — usually because one side
+was cloned from a local folder rather than the shared remote. Point both at the
+same remote, or apply it deliberately with `iwomc rescue --contract <id>`.
+
+**`invalid_input`** — something you passed cannot be read as what it should be,
+such as `--at yesterday` where a date and time is expected.
+The message names the flag and shows the shape it wants. IWOMC refuses rather
+than answering from a value it had to guess at.
 
 **`no_contract_for_revision`** — no contract exists for this exact commit, or a
 declared file differs from the captured source.
@@ -148,6 +161,57 @@ GitHub identity.
 
 **`ExperimentalWarning: SQLite is an experimental feature`** — Node's own notice
 about `node:sqlite`. It is harmless.
+
+**"This revision was never observed here"** — the package log has no record of
+that Git revision on this device. Either it was never checked out here, or
+`iwomc watch` was not running while it was. IWOMC will not answer from a nearby
+revision, because a confident wrong answer about someone's machine is the
+failure it exists to prevent. Ask the person whose checkout worked to capture a
+contract at that revision.
+
+**"The watcher was not running for N of this period"** — a normal, honest
+report. Changes made while the watcher was down are still found by the next
+sweep, but their timing is only as precise as the gap, and a change that was
+made and then undone inside it is invisible. Keep `iwomc watch` running, or
+start it from your shell profile.
+
+**"Already being watched"** — a resident `iwomc watch` already holds this
+project on this device, so a second recorder stopped rather than starting.
+Nothing is missing: the running one is keeping the log. Only one recorder per
+project may write, because two would each notice the same install from their
+own last reading and record it twice, at two slightly different moments. The
+same reason is why `iwomc sweep` reports "not recorded here" while a watcher is
+running — the reading it shows you is still current.
+
+If the recorder was killed rather than stopped, the next command takes over at
+once: IWOMC checks whether the process is still alive rather than waiting out
+its heartbeat.
+
+**"This revision is covered for macos/x64, but not for windows/x64"** — your
+teammates captured this commit on a different kind of machine. A contract
+records the platform it was captured on, and IWOMC will not apply one to a
+platform it was never observed on. Someone on your platform needs to run
+`iwomc capture` at this revision.
+
+**"Every contract for this revision has been rejected or revoked"** — the
+contracts exist, and someone withdrew them. That is a decision, not an
+absence: ask why before capturing a replacement.
+
+**"N captures of this revision disagree"** — two or more teammates captured the
+same commit and their machines differ. Nothing is broken yet; this is the
+warning that arrives first. Look at which package differs and who holds the
+minority answer. IWOMC will not decide who is right, and applies the contract
+with the most evidence behind it in the meantime.
+
+**"already applied, skipped" during a rescue** — IWOMC records each step it
+completes so an interrupted rescue resumes instead of repeating work. It only
+reuses work done in *that same directory*: a second checkout of the same
+project starts from nothing, because nothing has been applied to it.
+
+**A timeline with no changes** — the log records changes, not the initial
+state. The first observation of a project establishes a baseline and emits no
+events, because claiming every already-installed package arrived the instant
+IWOMC started would date the whole tree wrongly.
 
 ---
 

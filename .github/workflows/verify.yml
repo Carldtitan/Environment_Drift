@@ -1,0 +1,73 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The fast gates: types, the documentation checks, and the unit tests.
+  # These catch most mistakes in about a minute.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run build:console
+      - run: pnpm run trace
+      - run: pnpm run honesty
+      - run: pnpm run secret-scan
+      - run: pnpm run capability-matrix:check
+      - run: pnpm vitest run --project unit
+
+  # The end-to-end tests build real Git repositories, run real installs, and
+  # drive a real browser. They are slower on purpose: a passing run means the
+  # workflow genuinely works, not that the mocks agree with each other.
+  end-to-end:
+    strategy:
+      fail-fast: false
+      matrix:
+        # All three are claimed as supported in the README, so all three are
+        # tested. Windows especially: it has its own rules for spawning `.cmd`
+        # shims and for what a filesystem watch reports, and both have caused
+        # real bugs here.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run build:console
+      # `--with-deps` installs system libraries and is Linux-only.
+      - run: pnpm exec playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: pnpm exec playwright install chromium
+        if: runner.os != 'Linux'
+      - name: Configure Git for the test fixtures
+        run: |
+          git config --global user.email ci@iwomc.invalid
+          git config --global user.name "IWOMC CI"
+          git config --global init.defaultBranch main
+      - run: pnpm vitest run --project e2e
+      - name: Upload console screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-screenshots-${{ matrix.os }}
+          path: artifacts/console
+          if-no-files-found: ignore

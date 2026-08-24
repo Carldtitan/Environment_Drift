@@ -106,3 +106,17 @@ export function Wordmark() {
     </svg>
   );
 }
+
+export function IconTimeline() {
+  // A time axis with three moments on it: the signal-grid motif, read as a
+  // sequence rather than a snapshot.
+  return (
+    <svg {...base}>
+      <path d="M2 8h12" />
+      <circle cx="4" cy="8" r="1.4" />
+      <circle cx="8" cy="8" r="1.4" />
+      <circle cx="12" cy="8" r="1.4" />
+      <path d="M8 3.5V6M12 10v2.5" />
+    </svg>
+  );
+}

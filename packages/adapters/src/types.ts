@@ -73,6 +73,17 @@ export interface DeclaredState {
   readonly systemTools: readonly SystemToolRequirement[];
   readonly secrets: readonly SecretRequirement[];
   readonly gaps: readonly CoverageGap[];
+  /**
+   * Exact versions the repository would install, by package name.
+   *
+   * A version *range* in a manifest is not what a teammate gets - the lockfile
+   * is. Comparing what is installed here against the range would fire on every
+   * healthy project; comparing it against the lockfile only fires when a fresh
+   * install would genuinely produce something different.
+   *
+   * Empty when the ecosystem has no lockfile committed.
+   */
+  readonly lockedVersions?: Readonly<Record<string, string>>;
 }
 
 export interface InventoryResult {

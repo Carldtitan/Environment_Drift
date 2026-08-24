@@ -137,6 +137,75 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     nextActions: ["Review the diff, commit it, then run `iwomc capture` and `iwomc verify` again."],
   },
   {
+    name: "watch",
+    summary: "Record package installs, upgrades, downgrades, and removals as they happen.",
+    usage: "iwomc watch [--all] [--interval <seconds>] [--json]",
+    effects:
+      "Appends to the local encrypted package log and records that this period was observed. Reads project-local package directories only; it never runs a package manager and never leaves the bound project directory.",
+    approval: "None. It writes nothing into the repository.",
+    flags: [
+      {
+        name: "--interval",
+        value: "<seconds>",
+        description: "Full sweep interval, default 45. A filesystem change also triggers an immediate sweep.",
+      },
+      {
+        name: "--all",
+        description: "Watch every checkout registered on this device, not only this one.",
+      },
+      { name: "--json", description: "Emit one JSON object per sweep that recorded a change." },
+    ],
+    exitCodes: COMMON_EXITS,
+    nextActions: [
+      "Leave it running while you work, then ask `iwomc timeline` what was installed at any moment.",
+    ],
+  },
+  {
+    name: "sweep",
+    summary: "Take one observation now, without staying resident.",
+    usage: "iwomc sweep [--json]",
+    effects: "Same as one `watch` sweep: reads the installed set and appends any changes it finds.",
+    approval: "None.",
+    flags: [{ name: "--json", description: "Machine-readable output." }],
+    exitCodes: COMMON_EXITS,
+    nextActions: ["Run `iwomc timeline` to see the log."],
+  },
+  {
+    name: "timeline",
+    summary: "Answer: what was installed here at a given moment, or at a given revision?",
+    usage: "iwomc timeline [<commit>] [--at <iso>] [--no-explain] [--json]",
+    effects:
+      "Read-only. The package state is replayed from IWOMC's own log and is identical on any machine holding that log. Claude-Mem is queried separately for narration and never changes the answer.",
+    approval: "None.",
+    flags: [
+      { name: "--at", value: "<iso>", description: "An instant. Defaults to now." },
+      { name: "--commit", value: "<sha>", description: "A revision. Takes precedence over --at." },
+      { name: "--no-explain", description: "Skip the Claude-Mem lookup entirely." },
+      { name: "--json", description: "Machine-readable output." },
+    ],
+    exitCodes: COMMON_EXITS,
+    nextActions: [
+      "Compare two points with `iwomc diff <from-commit> <to-commit>`.",
+      "Exit code 2 means the revision was never observed on this device; IWOMC will not estimate it from a nearby one.",
+    ],
+  },
+  {
+    name: "diff",
+    summary: "Answer: what would have to change to turn one point in time into another?",
+    usage: "iwomc diff <from-commit> <to-commit>   |   iwomc diff --since <iso> [--until <iso>]",
+    effects: "Read-only.",
+    approval: "None.",
+    flags: [
+      { name: "--from", value: "<sha>", description: "Starting revision." },
+      { name: "--to", value: "<sha>", description: "Ending revision." },
+      { name: "--since", value: "<iso>", description: "Starting instant, for a time comparison." },
+      { name: "--until", value: "<iso>", description: "Ending instant. Defaults to now." },
+      { name: "--json", description: "Machine-readable output." },
+    ],
+    exitCodes: COMMON_EXITS,
+    nextActions: ["Both sides must be the same kind: two revisions, or two instants."],
+  },
+  {
     name: "doctor",
     summary: "Report what is configured, what is connected, and what is blocked.",
     usage: "iwomc doctor [--json]",
@@ -255,9 +324,19 @@ EVERY COMMAND ACCEPTS --json AND RETURNS A STRUCTURED RESULT.
 
 export function renderRootHelp(): string {
   const lines: string[] = [];
-  lines.push(style.bold("iwomc") + " - make a teammate's broken checkout runnable from a verified contract.");
+  lines.push(
+    style.bold("iwomc") +
+      " - It Works On My Computer. Find out why a teammate's checkout fails, and fix it.",
+  );
   lines.push("");
   lines.push(style.bold("Usage:") + " iwomc <command> [options]");
+  lines.push("");
+  // A new reader needs the shape of the whole thing before an alphabetical
+  // list of twenty commands is of any use.
+  lines.push(style.bold("Getting started"));
+  lines.push('  On the checkout that works:  iwomc init --proof "npm test"');
+  lines.push("                               iwomc capture");
+  lines.push("  On the one that is broken:   iwomc rescue --approve");
   lines.push("");
   lines.push(style.bold("Commands"));
   const width = Math.max(...COMMAND_SPECS.map((spec) => spec.name.length));
@@ -270,7 +349,8 @@ export function renderRootHelp(): string {
   lines.push("  --json         Machine-readable output.");
   lines.push("  --help         Show this help, or `iwomc help <command>` for one command.");
   lines.push("");
-  lines.push(style.dim("Run `iwomc agent-docs` for the agent-facing workflow description."));
+  lines.push(style.dim("`iwomc help <command>` explains one command in full."));
+  lines.push(style.dim("`iwomc agent-docs` prints the same thing for a coding agent."));
   return lines.join("\n");
 }
 

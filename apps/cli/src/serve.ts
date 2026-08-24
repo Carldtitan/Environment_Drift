@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +90,16 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
   const port = options.port ?? companion.config.consolePort;
   const consoleDir = resolveConsoleDir();
 
+  // The console addresses a project by id; the Companion works in a checkout.
+  // Resolving here keeps the local path out of every response.
+  const checkoutPathFor = (projectId: string | null): string | null => {
+    const bindings = companion.listBindings();
+    const binding = projectId
+      ? (bindings.find((entry) => entry.projectId === projectId) ?? null)
+      : (bindings[0] ?? null);
+    return binding?.checkoutPath ?? null;
+  };
+
   const local: LocalContext = {
     deviceId: () => companion.device.id,
     status: async (projectId) => {
@@ -122,6 +133,16 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
       verifiers: await companion.verifierAvailability(),
     }),
     drift: async (projectId) => companion.listDrift(projectId),
+    timeline: async (projectId, query) => {
+      const checkout = checkoutPathFor(projectId);
+      if (checkout === null) return null;
+      return await companion.timeline(checkout, query);
+    },
+    timelineDiff: async (projectId, from, to) => {
+      const checkout = checkoutPathFor(projectId);
+      if (checkout === null) return null;
+      return await companion.timelineDiff(checkout, from, to);
+    },
     capabilities: async () =>
       companion.registry.all.map((adapter) => ({
         ...adapter.manifest,
@@ -131,13 +152,37 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
 
   const server = createControlPlaneServer({ service, store, consoleDir, local, publicOrigin: advertisedOrigin });
 
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(port, host, () => {
-      server.removeListener("error", rejectListen);
-      resolveListen();
-    });
-  });
+  try {
+    await listen(server, port, host);
+  } catch (error) {
+    if (isAddressInUse(error) && options.port === undefined) {
+      const occupiedOrigin = `http://${host}:${port}`;
+      if (await isIwomcConsole(occupiedOrigin)) {
+        const consoleUrl = `${occupiedOrigin}/#token=${bootstrap.sessionToken}`;
+        saveConfig({ controlPlaneUrl: occupiedOrigin, workspaceId: bootstrap.workspaceId, consolePort: port });
+        io.out(heading("IWOMC Rescue Console"));
+        io.out(line("ready", "Already running", occupiedOrigin));
+        io.out(`  ${style.bold("Open:")} ${style.signal(consoleUrl)}`);
+        io.out("");
+        if (options.open) openInBrowser(consoleUrl);
+        companion.close();
+        store.close();
+        return EXIT.ok;
+      }
+
+      // Another local app owns the preferred port. A local console does not
+      // need a fixed port, so ask the OS for a free one instead of crashing.
+      await listen(server, 0, host);
+    } else {
+      const detail = isAddressInUse(error)
+        ? `Port ${port} is already in use. Pick another with \`iwomc serve --port 4320\`.`
+        : (error as Error).message;
+      io.err(line("danger", "Could not start the Rescue Console", detail));
+      companion.close();
+      store.close();
+      return EXIT.blocked;
+    }
+  }
 
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : port;
@@ -166,6 +211,7 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
   io.out(`  ${style.bold("Open:")} ${style.signal(consoleUrl)}`);
   io.out(style.dim("  The link carries a one-time session token. Treat it like a password."));
   io.out("");
+  if (options.open) openInBrowser(consoleUrl);
 
   const client = new ControlPlaneClient({ baseUrl: origin });
   const credentials = { deviceId: bootstrap.deviceId, token: bootstrap.deviceToken };
@@ -185,6 +231,51 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
   companion.close();
   store.close();
   return EXIT.ok;
+}
+
+function listen(server: ReturnType<typeof createControlPlaneServer>, port: number, host: string): Promise<void> {
+  return new Promise<void>((resolveListen, rejectListen) => {
+    const fail = (error: Error) => {
+      server.removeListener("listening", ready);
+      rejectListen(error);
+    };
+    const ready = () => {
+      server.removeListener("error", fail);
+      resolveListen();
+    };
+    server.once("error", fail);
+    server.once("listening", ready);
+    server.listen(port, host);
+  });
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EADDRINUSE";
+}
+
+async function isIwomcConsole(origin: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(800) });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { status?: unknown };
+    return body.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
+function openInBrowser(url: string): void {
+  try {
+    const child =
+      process.platform === "win32"
+        ? spawn("cmd.exe", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true })
+        : process.platform === "darwin"
+          ? spawn("open", [url], { detached: true, stdio: "ignore" })
+          : spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    child.unref();
+  } catch {
+    // The usable one-time link has already been printed above.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,26 +459,65 @@ export function startJobRunner(
   let stopped = false;
   const inFlight = new Set<string>();
 
+  /**
+   * How often a device asks for work.
+   *
+   * Fixed three seconds is right when someone is actually waiting: they
+   * clicked a button in the console and want to see it start. It is wrong for
+   * the other twenty-three hours, where every enrolled device on the team asks
+   * a question with the same answer, all day. So the interval opens up while
+   * nothing is happening and snaps back the moment something does - a team of
+   * ten idles at a request every ten seconds per device instead of three,
+   * without anyone waiting noticeably longer.
+   */
+  const BUSY_MS = 3_000;
+  const IDLE_MS = 15_000;
+  // Roughly a minute of nothing before backing off.
+  const QUIET_POLLS_BEFORE_BACKOFF = 20;
+
+  let quietPolls = 0;
+  let currentDelay = BUSY_MS;
+  let timer: NodeJS.Timeout | null = null;
+
+  const schedule = (delay: number): void => {
+    if (stopped) return;
+    currentDelay = delay;
+    timer = setTimeout(() => void tick(), delay);
+  };
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     let jobs: RescueRequestV1[] = [];
     try {
       jobs = await client.pollJobs({ credentials });
     } catch {
+      // Unreachable control plane. Back off rather than hammering it while it
+      // is down, and recover as soon as it answers again.
+      quietPolls += 1;
+      schedule(quietPolls >= QUIET_POLLS_BEFORE_BACKOFF ? IDLE_MS : currentDelay);
       return;
     }
+
     for (const job of jobs) {
       if (inFlight.has(job.id)) continue;
       inFlight.add(job.id);
       void executeJob(companion, client, credentials, job, io).finally(() => inFlight.delete(job.id));
     }
+
+    if (jobs.length > 0) {
+      // Someone is using this device. Stay responsive.
+      quietPolls = 0;
+      schedule(BUSY_MS);
+      return;
+    }
+    quietPolls += 1;
+    schedule(quietPolls >= QUIET_POLLS_BEFORE_BACKOFF ? IDLE_MS : BUSY_MS);
   };
 
-  const timer = setInterval(() => void tick(), 3000);
   void tick();
   return () => {
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
   };
 }
 
