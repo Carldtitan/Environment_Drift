@@ -155,6 +155,7 @@ export function renderCapture(result: CaptureResult): string {
     ]),
   );
 
+
   if (result.contract) {
     out.push(heading("Candidate contract"));
     out.push(
@@ -222,15 +223,32 @@ export function renderVerify(result: VerifyResult): string {
       `${humanLabel(attestation.verifier)} - ${assuranceLabel(attestation.assurance)}`,
     ),
   );
+  const provedOn = `${attestation.platform.os}/${attestation.platform.arch}`;
+  const targets = result.contract?.targets?.map((t) => `${t.os}/${t.arch}`) ?? [];
+  const provedElsewhere = targets.length > 0 && !targets.includes(provedOn);
+
   out.push(
     keyValue([
       ["Contract", attestation.contractDigest.slice(0, 26)],
+      // Which machine the proof actually ran on. A remote verifier runs Linux
+      // whatever the contract targets, and "clean verified" without this reads
+      // as "verified for you" to someone on another platform.
+      ["Proved on", provedOn],
       ["Proof exit", String(attestation.proofExitCode ?? "not reached")],
       ["Steps run", String(attestation.stepExitCodes.length)],
       ["Cleanup", attestation.cleanup],
       ...(attestation.cost ? ([["Cost", `USD ${attestation.cost.amount.toFixed(4)} (${attestation.cost.basis})`]] as [string, string][]) : []),
     ]),
   );
+  if (provedElsewhere) {
+    out.push("");
+    out.push(
+      wrapText(
+        `This contract targets ${targets.join(", ")}, and the proof ran on ${provedOn}. That shows its steps are sound and reproducible on a clean machine; it is not evidence about ${targets.join(", ")} specifically.`,
+      ),
+    );
+  }
+
   if (attestation.failureReason) {
     out.push("");
     out.push(wrapText(attestation.failureReason));

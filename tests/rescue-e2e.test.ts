@@ -119,6 +119,24 @@ describe("capture in one checkout, rescue in another", () => {
     expect(payload.contract.state).toBe("locally_checked");
   }, 600_000);
 
+  it("can be verified again without complaining", async () => {
+    // Re-running verify is ordinary: after a change, or when a second person
+    // checks the same contract. The state machine rightly refuses to move a
+    // contract to the state it is already in, so verify must not ask it to -
+    // this used to end a successful verification with an unexpected error.
+    const again = await runIwomc(["verify", "--json"], { cwd: project.dir, env: sandbox.env });
+    expect(again.exitCode, again.stderr).toBe(EXIT.ok);
+    const payload = again.json<{
+      attestation: { state: string; platform: { os: string; arch: string } };
+      contract: { state: string };
+    }>();
+    expect(payload.attestation.state).toBe("passed");
+    expect(payload.contract.state).toBe("locally_checked");
+    // And it says which machine the proof actually ran on, so "verified" can
+    // never quietly mean "verified somewhere else".
+    expect(payload.attestation.platform.os).toBeTruthy();
+  }, 600_000);
+
   it("rescues the broken checkout and proves it works", async () => {
     const bind = await runIwomc(["init", "--json"], { cwd: broken, env: sandbox.env });
     expect(bind.exitCode).toBe(EXIT.ok);

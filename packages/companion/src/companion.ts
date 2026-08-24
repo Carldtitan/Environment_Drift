@@ -1259,6 +1259,13 @@ export class Companion {
     to: ContractState,
     approval?: { approvedBy: string; approvedAt: string; note?: string },
   ): EnvironmentContractV1 {
+    // Verifying a contract that already holds this state is an ordinary thing
+    // to do - re-running `iwomc verify` after a change, or a second person
+    // checking the same contract. There is nothing to move, and the state
+    // machine rightly refuses a transition to the state a contract is already
+    // in, so the answer is to not ask it. Approval is still recorded, because
+    // approving something already approved is a real act by a real person.
+    if (contract.state === to && !approval) return contract;
     const moved = transitionContract(contract, to);
     const withApproval = approval ? { ...moved, approval } : moved;
     // The transition changed the content, so the contract is re-addressed and
