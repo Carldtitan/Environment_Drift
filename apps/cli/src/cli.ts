@@ -570,6 +570,22 @@ async function dispatch(
         io.out(line(status.running ? "ready" : "attention", status.running ? "Recording" : "Not running", status.detail));
         io.out(bullet(`Autocapture is ${companion.config.autocapture ? "on" : "off"} for this device.`));
         io.out(bullet(autostart.installed ? `Starts at login. ${autostart.detail}` : "Does not start at login."));
+
+        // What it watches, and what it does not. Someone relying on a recorder
+        // deserves to know its edges without reading the source: a gap you
+        // know about is a different thing from one you discover later.
+        const watched = companion.registry.all
+          .filter((adapter) => adapter.manifest.support === "native" && adapter.manifest.capabilities.inventory)
+          .map((adapter) => adapter.manifest.manager);
+        io.out("");
+        io.out(style.dim("  It records:"));
+        io.out(bullet(`Packages installed, upgraded, downgraded, or removed (${watched.join(", ")}).`, "    "));
+        io.out(bullet("Which revision was checked out when each change happened.", "    "));
+        io.out(bullet("A record of what was installed each time you move to another revision.", "    "));
+        io.out(style.dim("  It does not record:"));
+        io.out(bullet("Runtime version switches - `iwomc capture` records those into a contract.", "    "));
+        io.out(bullet("Anything installed globally, or outside a registered checkout.", "    "));
+        io.out(bullet("Environment variable values, ever.", "    "));
         io.out(style.dim(`  Log: ${status.logPath}`));
         return EXIT.ok;
       }

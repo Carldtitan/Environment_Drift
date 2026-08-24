@@ -104,6 +104,17 @@ iwomc daemon enable    # also bring it back after a reboot
 iwomc daemon disable   # stop it, and stop it starting
 ```
 
+What it records: packages installed, upgraded, downgraded, or removed in your
+registered checkouts, which revision was checked out at the time, and a record
+of what was installed each time you move to a different revision — so asking
+"what did this machine have at that commit" has an answer even for a commit
+where you installed nothing.
+
+What it does not record: runtime version switches (`iwomc capture` puts those
+in a contract), anything installed globally or outside a registered checkout,
+and environment variable values ever. `iwomc daemon status` says all of this
+too, so nobody has to guess at its edges.
+
 `iwomc daemon enable` registers a per-user login entry — a Scheduled Task on
 Windows, a LaunchAgent on macOS, a systemd user service on Linux. None of them
 needs administrator rights, all three are removed by `disable`, and each one

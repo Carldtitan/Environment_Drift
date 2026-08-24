@@ -214,6 +214,11 @@ completes so an interrupted rescue resumes instead of repeating work. It only
 reuses work done in *that same directory*: a second checkout of the same
 project starts from nothing, because nothing has been applied to it.
 
+**A revision reports the wrong packages** — check whether you returned to it.
+IWOMC records what was installed each time you move to a revision, and answers
+with the most recent of those records. If the recorder was not running while
+you were there, the answer comes from whenever it last looked.
+
 **Something you installed does not appear as a change** — check when the
 recorder first looked. Its first reading of a project is a *baseline*: whatever
 was already installed at that moment was not "installed", it was simply there.

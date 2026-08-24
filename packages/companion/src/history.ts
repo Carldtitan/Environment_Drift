@@ -56,12 +56,24 @@ export function stateAtCommit(
   projectId: string,
   commit: string,
 ): HistoryResult {
-  const seq = store.seqAtCommit(projectId, commit);
+  const eventSeq = store.seqAtCommit(projectId, commit);
+  // Nothing may have *changed* while that revision was checked out, but IWOMC
+  // may still have looked at it - a capture, a first sweep, or simply moving
+  // to it records a baseline and no events, which is a complete answer rather
+  // than an absent one.
+  const baseline = store.latestBaselineForCommit(projectId, commit);
+
+  // People return to a revision. When both a change and a snapshot exist for
+  // one revision, the later of the two is the answer: reporting the first
+  // visit would describe a machine that has since moved on.
+  const seq =
+    eventSeq === null
+      ? null
+      : baseline && baseline.seq > eventSeq
+        ? baseline.seq
+        : eventSeq;
+
   if (seq === null) {
-    // Nothing *changed* while that revision was checked out, but IWOMC may
-    // still have looked at it - a capture or a first sweep records a baseline
-    // and no events, which is a complete answer, not an absent one.
-    const baseline = store.latestBaselineForCommit(projectId, commit);
     if (baseline) {
       return foldToSeq(store, projectId, baseline.seq, baseline.at, commit);
     }
@@ -73,7 +85,8 @@ export function stateAtCommit(
     };
   }
   const events = store.listPackageEvents(projectId, { fromSeq: seq, toSeq: seq, limit: 1 });
-  const at = events[0]?.at ?? new Date().toISOString();
+  const at =
+    events[0]?.at ?? (baseline && baseline.seq === seq ? baseline.at : new Date().toISOString());
   return foldToSeq(store, projectId, seq, at, commit);
 }
 

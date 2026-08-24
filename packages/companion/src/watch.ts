@@ -206,6 +206,7 @@ export class PackageWatcher {
   #previous: InventoryReading | null = null;
   #eventsSinceBaseline = 0;
   #lastBaselineAt = 0;
+  #lastCommit: string | null | undefined = undefined;
   #consecutiveFailures = 0;
   #inFlight: Promise<SweepResult | null> = Promise.resolve(null);
 
@@ -444,7 +445,15 @@ export class PackageWatcher {
     // a later fold asks which periods were actually observed.
     if (this.#sessionId) store.touchWatchSession(this.#sessionId, at);
 
-    const baseline = this.#maybeBaseline(reading, head.commit);
+    // Moving to a different revision is itself worth recording, even when no
+    // package changed. Otherwise a revision someone worked at for an hour has
+    // no record of its own, and asking what the machine had there answers from
+    // whenever they last happened to install something - which may be a
+    // different revision entirely, or an earlier visit to this one.
+    const commitChanged = this.#lastCommit !== undefined && this.#lastCommit !== head.commit;
+    this.#lastCommit = head.commit;
+
+    const baseline = this.#maybeBaseline(reading, head.commit, commitChanged);
     const result: SweepResult = {
       at,
       source,
@@ -509,11 +518,19 @@ export class PackageWatcher {
     }
   }
 
-  #maybeBaseline(reading: InventoryReading, commit: string | null): InventoryBaselineV1 | null {
+  #maybeBaseline(
+    reading: InventoryReading,
+    commit: string | null,
+    commitChanged: boolean,
+  ): InventoryBaselineV1 | null {
     const elapsed = Date.parse(reading.at) - this.#lastBaselineAt;
     const first = this.#lastBaselineAt === 0;
     const due =
       first ||
+      // A new revision gets its own record of what this machine had while it
+      // was checked out. This is the point of the whole log: "what did their
+      // machine look like at their commit".
+      commitChanged ||
       this.#eventsSinceBaseline >= this.#options.baselineEveryEvents ||
       elapsed >= this.#options.baselineEveryMs;
     if (!due) return null;

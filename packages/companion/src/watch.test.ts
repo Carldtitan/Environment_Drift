@@ -16,6 +16,7 @@ import { isCommitNotObserved, stateAt, stateAtCommit } from "./history.js";
 import { bindProject } from "./project.js";
 import { currentPlatform } from "./identity.js";
 import { readGitFacts } from "./git.js";
+import { run } from "./exec.js";
 
 /**
  * These exercise the real loop against a real repository and a real
@@ -479,6 +480,45 @@ describe("the background package watcher", () => {
 
     // Once it has given up, it is stopped rather than left running.
     await subject.stop("test");
+  }, 120_000);
+
+  it("records what the machine had at each revision someone worked at", async () => {
+    // The question this product exists to answer is "what did their machine
+    // look like at their commit". Recording only when a package changes is not
+    // enough: a revision someone moved to and worked at, without installing
+    // anything, would have no record of its own - and asking about it would
+    // answer from whenever they last installed something, which may be a
+    // different revision, or an earlier visit to this one.
+    const first = (await readGitFacts(project.dir)).commit;
+    await installUndeclaredPackage(project.dir, "present-at-both", "1.0.0");
+
+    const subject = watcher();
+    await subject.start();
+    await subject.sweepNow();
+
+    // Move to a second revision without changing a single package.
+    await run(["git", "commit", "--quiet", "--allow-empty", "--no-gpg-sign", "-m", "second"], {
+      cwd: project.dir,
+      timeoutMs: 60_000,
+      envAllowlist: null,
+    });
+    const second = (await readGitFacts(project.dir)).commit;
+    expect(second).not.toBe(first);
+
+    await subject.sweepNow();
+    await subject.stop("test");
+
+    // Both revisions answer, and both answer with what was actually installed
+    // while they were checked out.
+    for (const [label, commit] of [["first", first], ["second", second]] as const) {
+      const state = stateAtCommit(store, projectId, commit);
+      expect(isCommitNotObserved(state), `${label} revision should be observed`).toBe(false);
+      if (isCommitNotObserved(state)) continue;
+      expect(
+        state.packages.map((entry) => entry.name),
+        `${label} revision`,
+      ).toContain("present-at-both");
+    }
   }, 120_000);
 
   it("never executes a package manager to learn what is installed", async () => {
