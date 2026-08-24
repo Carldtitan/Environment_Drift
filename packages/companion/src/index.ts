@@ -18,6 +18,7 @@ export * from "./agreement.js";
 export * from "./capture.js";
 export * from "./materialize.js";
 export * from "./proof.js";
+export * from "./portability.js";
 export * from "./rescue.js";
 export * from "./promote.js";
 export * from "./verify-local.js";

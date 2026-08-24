@@ -43,6 +43,15 @@ import {
  * Exit codes are part of the CLI contract, so an agent or a CI job can branch
  * on them without parsing text.
  */
+/**
+ * The published package version.
+ *
+ * Kept beside the command that prints it so `iwomc --version` and the npm
+ * package can never disagree; `scripts/package-cli.mjs` checks this matches
+ * what it is about to publish.
+ */
+export const CLI_VERSION = "0.2.0";
+
 export const EXIT = {
   ok: 0,
   failed: 1,
@@ -121,7 +130,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
   }
 
   if (args.command === "--version" || args.command === "-v" || args.command === "version") {
-    io.out("iwomc 0.1.6");
+    io.out(`iwomc ${CLI_VERSION}`);
     return EXIT.ok;
   }
 

@@ -202,6 +202,11 @@ export async function captureEnvironment(input: CaptureInput): Promise<CaptureRe
       projectDir: project.projectDir,
       platform: project.platform,
       declared,
+      // Which packages install only on some platforms. This is what decides
+      // whether the contract can be applied on another operating system.
+      ...(inventory.platformConstraints && Object.keys(inventory.platformConstraints).length > 0
+        ? { platformConstraints: inventory.platformConstraints }
+        : {}),
       ...(inventory.snapshot ? { inventoryAfter: inventory.snapshot } : {}),
       observed,
       evidence,

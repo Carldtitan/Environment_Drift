@@ -22,6 +22,7 @@ import type {
   EvidenceBundle,
   InventoryResult,
   MaterializationContext,
+  PlatformConstraint,
   ObservedEffect,
   ObservedProcess,
   PreflightIssue,
@@ -106,6 +107,48 @@ async function readInstalled(projectDir: string): Promise<Map<string, string> | 
   return installed;
 }
 
+/**
+ * The platforms a package restricts itself to, if any.
+ *
+ * Build tools ship one binary package per platform - `@esbuild/darwin-arm64`,
+ * `@rollup/rollup-linux-x64-gnu` - each declaring `os` and `cpu` so the
+ * package manager installs only the matching one and silently skips the rest.
+ * A contract that pinned one of those could not be applied on another machine,
+ * so the restriction is recorded rather than discovered as a failure later.
+ */
+export async function readPlatformConstraint(
+  projectDir: string,
+  name: string,
+): Promise<{ os?: string[]; cpu?: string[]; source?: string } | undefined> {
+  try {
+    const raw = await readFile(
+      join(projectDir, "node_modules", ...name.split("/"), "package.json"),
+      "utf8",
+    );
+    const parsed = JSON.parse(raw) as { os?: unknown; cpu?: unknown };
+    const list = (value: unknown): string[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const entries = value.filter((item): item is string => typeof item === "string");
+      return entries.length > 0 ? entries : undefined;
+    };
+    const os = list(parsed.os);
+    const cpu = list(parsed.cpu);
+    if (!os && !cpu) return undefined;
+    return {
+      ...(os ? { os } : {}),
+      ...(cpu ? { cpu } : {}),
+      source: `package.json declares ${[os ? `os ${os.join("/")}` : "", cpu ? `cpu ${cpu.join("/")}` : ""]
+        .filter(Boolean)
+        .join(", ")}`,
+    };
+  } catch {
+    // Not installed, or an unreadable manifest. Absent means unrestricted,
+    // which is the common case and the safe reading here: the check that
+    // matters runs again on the machine applying the contract.
+    return undefined;
+  }
+}
+
 async function readInstalledVersion(dir: string): Promise<string | null> {
   try {
     const raw = await readFile(join(dir, "package.json"), "utf8");
@@ -114,6 +157,76 @@ async function readInstalledVersion(dir: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Read a package's own platform restriction from an already-open manifest.
+ *
+ * Kept separate from `readPlatformConstraint` so the inventory pass, which
+ * opens every manifest anyway, does not open them all a second time.
+ */
+function constraintFrom(parsed: { os?: unknown; cpu?: unknown }): PlatformConstraint | undefined {
+  const list = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const entries = value.filter((item): item is string => typeof item === "string");
+    return entries.length > 0 ? entries : undefined;
+  };
+  const os = list(parsed.os);
+  const cpu = list(parsed.cpu);
+  if (!os && !cpu) return undefined;
+  return {
+    ...(os ? { os } : {}),
+    ...(cpu ? { cpu } : {}),
+    source: `package.json declares ${[os ? `os ${os.join("/")}` : "", cpu ? `cpu ${cpu.join("/")}` : ""]
+      .filter(Boolean)
+      .join(", ")}`,
+  };
+}
+
+/** Versions and platform restrictions from one pass over node_modules. */
+async function readInstalledDetail(
+  projectDir: string,
+): Promise<{ versions: Map<string, string>; constraints: Record<string, PlatformConstraint> } | null> {
+  const root = join(projectDir, "node_modules");
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch {
+    return null;
+  }
+  const versions = new Map<string, string>();
+  const constraints: Record<string, PlatformConstraint> = {};
+
+  const visit = async (name: string, dir: string): Promise<void> => {
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as {
+        version?: string;
+        os?: unknown;
+        cpu?: unknown;
+      };
+      versions.set(name, typeof parsed.version === "string" ? parsed.version : "");
+      const constraint = constraintFrom(parsed);
+      if (constraint) constraints[name] = constraint;
+    } catch {
+      // A directory with no readable manifest is not a package.
+    }
+  };
+
+  for (const entry of names) {
+    if (entry.startsWith(".")) continue;
+    if (entry.startsWith("@")) {
+      let scoped: string[];
+      try {
+        scoped = await readdir(join(root, entry));
+      } catch {
+        continue;
+      }
+      for (const inner of scoped) await visit(`${entry}/${inner}`, join(root, entry, inner));
+      continue;
+    }
+    await visit(entry, join(root, entry));
+  }
+  return { versions, constraints };
 }
 
 
@@ -274,7 +387,8 @@ export class NpmAdapter implements EnvironmentAdapter {
   }
 
   async inventory(ctx: AdapterContext): Promise<InventoryResult> {
-    const installed = await readInstalled(ctx.projectDir);
+    const detail = await readInstalledDetail(ctx.projectDir);
+    const installed = detail?.versions ?? null;
     if (installed === null) {
       return {
         adapterId: ADAPTER_ID,
@@ -294,6 +408,9 @@ export class NpmAdapter implements EnvironmentAdapter {
     return {
       adapterId: ADAPTER_ID,
       available: true,
+      ...(detail && Object.keys(detail.constraints).length > 0
+        ? { platformConstraints: detail.constraints }
+        : {}),
       snapshot: {
         adapterId: ADAPTER_ID,
         manager: "npm",
@@ -416,6 +533,7 @@ export class NpmAdapter implements EnvironmentAdapter {
 
   compile(bundle: EvidenceBundle): CompileResult {
     const declared = bundle.declared;
+    const constraints = bundle.platformConstraints ?? {};
     const declaredNames = new Map(declared.packages.map((pkg) => [pkg.name, pkg]));
     const installed = new Map(
       (bundle.inventoryAfter?.entries ?? []).map((entry) => [entry.name, entry.version]),
@@ -452,6 +570,9 @@ export class NpmAdapter implements EnvironmentAdapter {
           source: "observed",
           evidenceRefs,
           declared: false,
+          ...(constraints[observedPackage.name]
+            ? { platformConstraint: constraints[observedPackage.name] }
+            : {}),
         });
         drift.push({
           adapterId: ADAPTER_ID,
@@ -502,6 +623,7 @@ export class NpmAdapter implements EnvironmentAdapter {
         // It *is* declared - just not at this version. Saying otherwise would
         // send a promotion down the wrong path.
         declared: true,
+        ...(constraints[name] ? { platformConstraint: constraints[name] } : {}),
       };
       if (existing === -1) packages.push(requirement);
       else packages[existing] = requirement;

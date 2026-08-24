@@ -187,6 +187,12 @@ If the recorder was killed rather than stopped, the next command takes over at
 once: IWOMC checks whether the process is still alive rather than waiting out
 its heartbeat.
 
+**"cannot be applied on linux/x64: @rollup/rollup-win32-x64-msvc installs only
+on the platform it was captured on"** — the contract pins a package that exists
+for one platform only, usually a build tool's binary. Someone on your platform
+needs to capture the revision. A contract with nothing platform-specific in it
+applies across operating systems and simply tells you it was proven elsewhere.
+
 **"This revision is covered for macos/x64, but not for windows/x64"** — your
 teammates captured this commit on a different kind of machine. A contract
 records the platform it was captured on, and IWOMC will not apply one to a

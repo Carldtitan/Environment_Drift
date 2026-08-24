@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const release = join(root, "release", "iwomc");
+// A feature release: the package timeline, autocapture, team contract
+// selection, and cross-platform application.
+const CLI_VERSION = "0.2.0";
+
 const internal = ["contracts", "adapters", "companion", "control-plane", "integrations"];
 
 await rm(release, { recursive: true, force: true });
@@ -65,7 +69,7 @@ await writeFile(
   `${JSON.stringify(
     {
       name: "iwomc",
-      version: "0.1.6",
+      version: CLI_VERSION,
       description: "It Works On My Computer - find out why a teammate's checkout fails, and fix it.",
       type: "module",
       bin: { iwomc: "./bin/iwomc.js" },
@@ -137,20 +141,29 @@ await writeFile(
     "- or to catch a downgrade, which a snapshot cannot express - leave the recorder on:",
     "",
     "```bash",
-    "iwomc watch                               # or --all for every registered project",
+    "iwomc daemon status                       # a recorder starts by itself; this shows it",
     "iwomc timeline <commit>                   # what was installed at that commit",
     "iwomc diff <their-commit> <your-commit>   # what is different between the two",
     "```",
     "",
-    "It reads your project's package folders and nothing else: it never runs a package",
-    "manager, never looks outside the projects you registered, never edits a tracked",
-    "file, and never uploads your history.",
+    "The recorder starts the first time you use IWOMC in a project and tells you it",
+    "has. It reads your project's package folders and nothing else: it never runs a",
+    "package manager, never looks outside the projects you registered, never edits a",
+    "tracked file, and never uploads your history. `iwomc daemon disable` stops it.",
     "",
     "## For coding agents",
     "",
     "`iwomc mcp` exposes the same workflow as typed MCP tools. Anything that changes",
     "your machine refuses to run without explicit confirmation. Run `iwomc agent-docs`",
     "for the full reference offline.",
+    "",
+    "## Across operating systems",
+    "",
+    "The person whose machine works is often not on your operating system. IWOMC",
+    "applies their contract anyway when nothing in it is restricted to one platform,",
+    "and says it was proven elsewhere rather than implying otherwise. When something",
+    "*is* restricted - a build tool's per-platform binary, say - it refuses and names",
+    "the package instead of giving you a generic mismatch to diagnose.",
     "",
     "## Supported today",
     "",
@@ -170,5 +183,15 @@ await writeFile(
 // A published package that claims MIT in its metadata must carry the licence
 // text alongside it.
 await cp(join(root, "LICENSE"), join(release, "LICENSE"));
+
+// The version the CLI prints and the version being published must match, or
+// a bug report names a build that does not exist.
+const cliSource = await readFile(join(root, "apps", "cli", "src", "cli.ts"), "utf8");
+const declared = /CLI_VERSION = "([^"]+)"/.exec(cliSource)?.[1];
+if (declared !== CLI_VERSION) {
+  throw new Error(
+    `apps/cli/src/cli.ts says ${declared}, this script says ${CLI_VERSION}. They must agree.`,
+  );
+}
 
 console.log(`npm package staged at ${release}`);

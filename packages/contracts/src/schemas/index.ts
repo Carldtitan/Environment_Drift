@@ -349,6 +349,18 @@ export const ENVIRONMENT_CONTRACT_SCHEMA: JsonSchema = {
               versionSpec: { type: "string", minLength: 1, maxLength: 128 },
               scope: { enum: ["direct", "transitive", "tool"] },
               source: EVIDENCE_SOURCE,
+              // Present only when the package restricts itself to some
+              // platforms. It is what decides whether a contract can be
+              // applied on another operating system at all.
+              platformConstraint: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  os: { type: "array", items: { type: "string", maxLength: 32 }, maxItems: 32 },
+                  cpu: { type: "array", items: { type: "string", maxLength: 32 }, maxItems: 32 },
+                  source: { type: "string", maxLength: 256 },
+                },
+              },
               evidenceRefs: { type: "array", items: ID, maxItems: 64 },
               declared: { type: "boolean" },
             },

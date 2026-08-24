@@ -99,6 +99,14 @@ Every stop has a machine-readable blocker code and exactly one next action.
   each bound to the revision that was checked out and to an honest observation
   window, with point-in-time and by-revision queries.
 
+## Across operating systems
+
+A contract records the platform it was captured on, and IWOMC applies it
+elsewhere when nothing in it is restricted to that platform — saying so rather
+than implying it was proven where it is being used. When something *is*
+restricted, usually a build tool's per-platform binary, it refuses and names
+the package.
+
 ## What is honestly unavailable
 
 The package log is device-local and is not uploaded. A teammate's history

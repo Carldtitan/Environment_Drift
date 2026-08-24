@@ -71,6 +71,27 @@ export interface PackageRequirement {
   readonly evidenceRefs: readonly string[];
   /** True when the repository already declares it; false means observed-only. */
   readonly declared: boolean;
+  /**
+   * The platforms this package can install on, when it is restricted to some.
+   *
+   * Build tools ship their binaries as separate packages - `@esbuild/darwin-arm64`,
+   * `@rollup/rollup-linux-x64-gnu` - each declaring `os` and `cpu` so the
+   * package manager installs only the matching one. Python does the same with
+   * an environment marker such as `; sys_platform == "win32"`.
+   *
+   * It matters because it is the whole difference between a contract that can
+   * be applied on another operating system and one that cannot. Pinning a
+   * Windows binary on a Mac does not produce a working machine, it produces a
+   * confusing failure - so IWOMC records the restriction where it finds one,
+   * and refuses rather than guessing. Absent means the package is not
+   * restricted.
+   */
+  readonly platformConstraint?: {
+    readonly os?: readonly string[];
+    readonly cpu?: readonly string[];
+    /** The raw restriction as written, for a message a person can act on. */
+    readonly source?: string;
+  };
 }
 
 export interface SystemToolRequirement {

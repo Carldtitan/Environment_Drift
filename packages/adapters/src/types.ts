@@ -86,11 +86,26 @@ export interface DeclaredState {
   readonly lockedVersions?: Readonly<Record<string, string>>;
 }
 
+/** A package that installs only on some platforms, and which ones. */
+export interface PlatformConstraint {
+  readonly os?: readonly string[];
+  readonly cpu?: readonly string[];
+  readonly source?: string;
+}
+
 export interface InventoryResult {
   readonly adapterId: string;
   readonly available: boolean;
   readonly snapshot?: InventorySnapshot;
   readonly gaps: readonly CoverageGap[];
+  /**
+   * Platform restrictions found while taking inventory, by package name.
+   *
+   * Gathered here because this is the one pass that already opens every
+   * installed package's manifest, and because compiling a contract is
+   * synchronous and cannot go back to the disk for it.
+   */
+  readonly platformConstraints?: Readonly<Record<string, PlatformConstraint>>;
 }
 
 /** A package-manager process the Companion correlated to the project. */
@@ -116,6 +131,8 @@ export interface EvidenceBundle {
   readonly projectDir: string;
   readonly platform: PlatformTarget;
   readonly declared: DeclaredState;
+  /** Platform restrictions observed while taking inventory, by package name. */
+  readonly platformConstraints?: Readonly<Record<string, PlatformConstraint>>;
   readonly inventoryBefore?: InventorySnapshot;
   readonly inventoryAfter?: InventorySnapshot;
   readonly observed: readonly ObservedEffect[];

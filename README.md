@@ -163,9 +163,31 @@ on disk against what the lockfile would install and flags the difference.
 **Committing `node_modules`** technically works and is miserable. IWOMC records
 a few kilobytes of facts instead of a few hundred megabytes of files.
 
+## Across operating systems
+
+The lead whose machine works is often not on your operating system. IWOMC
+applies their contract anyway, when it can do so honestly.
+
+Installing the declared dependency tree is already platform-aware — `npm ci`
+and `pip install` resolve the right build for the machine they run on. What is
+*not* portable is a pinned package that exists for one platform only: build
+tools ship their binaries that way (`@esbuild/darwin-arm64`,
+`@rollup/rollup-linux-x64-gnu`), each declaring the platforms it installs on,
+and Python does the same with an environment marker.
+
+So IWOMC records that restriction when it finds one, and asks the right
+question — not "was this captured here" but "does anything in it only work
+there":
+
+- Nothing restricted: the contract applies, and says it was proven on another
+  platform rather than pretending otherwise.
+- Something restricted: it refuses and **names the package**, instead of a
+  generic platform mismatch you would have to go and diagnose.
+
 ## Requirements
 
-Node.js 22.5 or newer. No Docker. No account. macOS, Linux, and Windows.
+Node.js 22.5 or newer. No Docker. No account. macOS, Linux, and Windows —
+each of which runs the full test suite on every change.
 
 ## Documentation
 

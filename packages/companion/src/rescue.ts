@@ -20,6 +20,7 @@ import {
 } from "@iwomc/contracts";
 import type { AdapterRegistry, MaterializationContext } from "@iwomc/adapters";
 import { probe } from "./exec.js";
+import { assessPortability, describePortability } from "./portability.js";
 import { buildProjectRedactor } from "./capture.js";
 import { materialize } from "./materialize.js";
 import { runProof } from "./proof.js";
@@ -451,18 +452,26 @@ async function preflight(
     );
   }
 
-  // Platform.
-  const platformMatch = contract.targets.some(
-    (target) => target.os === project.platform.os && target.arch === project.platform.arch,
-  );
-  if (!platformMatch) {
+  // Platform. Being captured elsewhere is not by itself a reason to refuse:
+  // what matters is whether anything in the contract only installs there.
+  const portability = assessPortability(contract, project.platform);
+  if (!portability.capturedHere && !portability.portable) {
     return blocker(
       "platform_mismatch",
-      `The contract targets ${contract.targets.map((t) => `${t.os}/${t.arch}`).join(", ")}, but this machine is ${project.platform.os}/${project.platform.arch}.`,
-      "Capture a contract on this platform, or run rescue on a matching machine.",
+      describePortability(portability, project.platform),
+      `Ask a teammate on ${project.platform.os}/${project.platform.arch} to run \`iwomc capture\` at this revision.`,
+      {
+        capturedOn: portability.capturedOn,
+        blockedBy: portability.blocking.map((entry) => `${entry.name} (${entry.reason})`),
+      },
     );
   }
-  emit({ kind: "preflight_check", message: `Platform ${project.platform.os}/${project.platform.arch} matches the contract.` });
+  emit({
+    kind: "preflight_check",
+    message: portability.capturedHere
+      ? `Platform ${project.platform.os}/${project.platform.arch} matches the contract.`
+      : describePortability(portability, project.platform),
+  });
 
   // Support level and approval.
   const recipeReviewed = contract.steps
