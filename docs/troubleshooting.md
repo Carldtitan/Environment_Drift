@@ -208,6 +208,12 @@ completes so an interrupted rescue resumes instead of repeating work. It only
 reuses work done in *that same directory*: a second checkout of the same
 project starts from nothing, because nothing has been applied to it.
 
+**Something you installed does not appear as a change** — check when the
+recorder first looked. Its first reading of a project is a *baseline*: whatever
+was already installed at that moment was not "installed", it was simply there.
+Only what changes after that becomes an event. `iwomc daemon status` shows when
+the recorder started.
+
 **A timeline with no changes** — the log records changes, not the initial
 state. The first observation of a project establishes a baseline and emits no
 events, because claiming every already-installed package arrived the instant

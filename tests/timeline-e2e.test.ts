@@ -238,6 +238,26 @@ describe("recording without being asked", () => {
   }, 600_000);
 
   it("records a change with no IWOMC command involved", async () => {
+    // Wait for the recorder to have taken its first reading before changing
+    // anything. That reading is the baseline, and whatever is already present
+    // in it was not "installed" - it was simply there. Installing before the
+    // recorder has looked would put the package in the baseline and produce no
+    // event at all, correctly, which on a slower machine is exactly what
+    // happened.
+    await expect
+      .poll(
+        async () => {
+          const result = await runIwomc(["timeline", "--json", "--no-explain"], {
+            cwd: project.dir,
+            env: sandbox.env,
+          });
+          const state = result.json<{ state: { packages?: unknown[] } }>().state;
+          return (state.packages ?? []).length > 0;
+        },
+        { timeout: 120_000, interval: 2_000 },
+      )
+      .toBe(true);
+
     const appeared = `arrived-on-its-own-${Math.random().toString(36).slice(2, 8)}`;
     await installUndeclaredPackage(project.dir, appeared, "1.2.3");
 
