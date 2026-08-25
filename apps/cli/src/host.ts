@@ -5,7 +5,7 @@ import { generateDeviceKeyPair, type KeyPair } from "@iwomc/contracts";
 import { createControlPlaneServer, ControlPlaneService, normalizePublicOrigin, SqliteControlPlaneStore } from "@iwomc/control-plane";
 import { heading, line, style } from "./render.js";
 import type { CliIo } from "./cli.js";
-import { EXIT } from "./cli.js";
+import { CLI_VERSION, EXIT } from "./cli.js";
 
 /**
  * Run the public IWOMC control plane. Devices keep their own encrypted local
@@ -51,6 +51,10 @@ export async function runHostedControlPlane(io: CliIo, env: NodeJS.ProcessEnv = 
     store,
     consoleDir,
     publicOrigin: origin,
+    // The health endpoint is the only way to tell from outside which build is
+    // actually serving. Reporting a constant made "is the hosted console up to
+    // date?" a question nobody could answer without redeploying to find out.
+    version: CLI_VERSION,
     githubOAuth: {
       clientId,
       clientSecret,

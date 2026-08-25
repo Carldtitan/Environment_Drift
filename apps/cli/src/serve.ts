@@ -30,7 +30,7 @@ import { ControlPlaneClient } from "@iwomc/integrations";
 import { buildCompanion } from "./wiring.js";
 import { bullet, heading, line, style } from "./render.js";
 import type { CliIo } from "./cli.js";
-import { EXIT } from "./cli.js";
+import { CLI_VERSION, EXIT } from "./cli.js";
 
 /**
  * `iwomc serve` runs the control plane and the Rescue Console on this machine.
@@ -150,7 +150,15 @@ export async function runServe(options: ServeOptions, io: CliIo): Promise<number
       })),
   };
 
-  const server = createControlPlaneServer({ service, store, consoleDir, local, publicOrigin: advertisedOrigin });
+  const server = createControlPlaneServer({
+    service,
+    store,
+    consoleDir,
+    local,
+    publicOrigin: advertisedOrigin,
+    // So `/api/health` names the build that is serving, here as well as hosted.
+    version: CLI_VERSION,
+  });
 
   try {
     await listen(server, port, host);
