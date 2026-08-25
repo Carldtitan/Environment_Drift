@@ -191,7 +191,18 @@ describe.each(CASES)("$name: repair a checkout without touching the machine", (s
 
   it("repairs a fresh checkout and leaves the machine-wide cache alone", async () => {
     if (!available) return;
-    await runIwomc(["verify", "--json"], { cwd: project.dir, env: sandbox.env });
+    // Ignoring this result hid the real failure once already: rescue reported
+    // "the contract is still a candidate", which is a consequence, not a cause.
+    const verified = await runIwomc(["verify", "--json"], { cwd: project.dir, env: sandbox.env });
+    const verdict = verified.json<{
+      contract?: { state: string };
+      verifierDetail?: string;
+      blocker: { code: string; message: string } | null;
+    }>();
+    expect(
+      verdict.contract?.state,
+      `verify did not check this contract: ${verdict.blocker?.code} ${verdict.blocker?.message} | ${verdict.verifierDetail}`,
+    ).toBe("locally_checked");
 
     follower = join(sandbox.home, `${subject.name.toLowerCase()}-follower`);
     await run(["git", "clone", "--quiet", project.originDir, follower], {
