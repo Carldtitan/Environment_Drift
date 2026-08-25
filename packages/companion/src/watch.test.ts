@@ -226,6 +226,48 @@ describe("the background package watcher", () => {
     expect(events).toHaveLength(1);
   });
 
+  it("still answers what changed when another recorder holds the log", async () => {
+    // `iwomc sweep` while a resident recorder is running is the ordinary case,
+    // not a rare one. It used to return an empty change list, which reads as
+    // "nothing changed" when the truth was "I never compared" - and those two
+    // answers must never look the same.
+    const resident = watcher();
+    await resident.start();
+    try {
+      await installUndeclaredPackage(project.dir, "seen-not-written", "4.5.6");
+
+      const bystander = watcher();
+      await expect(bystander.start()).rejects.toBeInstanceOf(RecorderBusyError);
+
+      const observed = await bystander.observe();
+      expect(observed.recorded).toBe(false);
+      expect(observed.events.map((event) => event.name)).toContain("seen-not-written");
+
+      // Seen, but deliberately not written: that is the resident recorder's job,
+      // and doing it twice would put one change in the history twice.
+      expect(
+        store.listPackageEvents(projectId).filter((event) => event.name === "seen-not-written"),
+      ).toHaveLength(0);
+    } finally {
+      await resident.stop("test");
+    }
+  });
+
+  it("separates nothing-changed from did-not-compare", async () => {
+    const resident = watcher();
+    await resident.start();
+    try {
+      const bystander = watcher();
+      const quiet = await bystander.observe();
+      // Nothing was installed, so there is genuinely nothing to report - and
+      // the result says which of the two situations this is.
+      expect(quiet.events).toEqual([]);
+      expect(quiet.recorded).toBe(false);
+    } finally {
+      await resident.stop("test");
+    }
+  });
+
   it("hands the project over once the previous recorder stops", async () => {
     const first = watcher();
     await first.start();

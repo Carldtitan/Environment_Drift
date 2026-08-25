@@ -195,9 +195,14 @@ describe("the Rescue Console in a browser", () => {
     const appeared = `console-only-${Math.random().toString(36).slice(2, 8)}`;
     await installUndeclaredPackage(project.dir, appeared, "3.2.1");
     const sweep = await runIwomc(["sweep", "--json"], { cwd: project.dir, env: sandbox.env });
-    expect(sweep.json<{ events: { name: string }[] }>().events.map((event) => event.name)).toEqual([
-      appeared,
-    ]);
+    const swept = sweep.json<{ events: { name: string }[]; recorded: boolean }>();
+    // An empty list here means one of two things, and only one of them is a
+    // bug in what is under test. Say which before comparing.
+    expect(
+      swept.recorded,
+      "another recorder held this project, so this sweep did not write the log",
+    ).toBe(true);
+    expect(swept.events.map((event) => event.name)).toEqual([appeared]);
 
     const page = await open();
     await page.locator('.rail__nav a[href="#/timeline"], .rail__nav [data-route="timeline"]').first().click().catch(async () => {

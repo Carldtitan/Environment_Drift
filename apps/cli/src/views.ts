@@ -569,7 +569,10 @@ export function renderSweep(result: SweepResult): string {
     keyValue([
       ["At", result.at],
       ["Installed packages", String(result.packageCount)],
-      ["Changes recorded", String(result.events.length)],
+      // "Recorded" would be a false label when another recorder owns the log:
+      // the changes below are real either way, they are just written down by
+      // that recorder rather than by this command.
+      [result.recorded ? "Changes recorded" : "Changes seen", String(result.events.length)],
       ["Revision", result.commit ? result.commit.slice(0, 12) : "not recorded"],
     ]),
   );

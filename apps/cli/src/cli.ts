@@ -515,7 +515,11 @@ async function dispatch(
       if (!sweep.recorded) {
         io.out("");
         io.out(line("ready", "Not recorded here", "a resident `iwomc watch` is already keeping this log"));
-        io.out(wrapText("The reading above is current. Writing it from two processes would put one change in the history twice."));
+        io.out(
+          wrapText(
+            "The reading above is current, and any change it lists is real - the resident recorder writes it down. Writing it from two processes would put one change in the history twice.",
+          ),
+        );
       }
       return EXIT.ok;
     }

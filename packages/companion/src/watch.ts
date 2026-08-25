@@ -122,6 +122,15 @@ export interface SweepResult {
   readonly commit: string | null;
   /** Managers that could not be read this sweep, with the reason. */
   readonly unavailable: readonly { manager: string; reason: string }[];
+  /**
+   * False when another recorder owns this project, so these changes were
+   * observed but left for that recorder to write down.
+   *
+   * An empty `events` used to mean two very different things - "nothing
+   * changed" and "I never compared" - which are indistinguishable to anyone
+   * reading the result. They are separate fields now.
+   */
+  readonly recorded: boolean;
 }
 
 export interface WatcherInput {
@@ -298,14 +307,39 @@ export class PackageWatcher {
   async observe(): Promise<SweepResult> {
     const reading = await readInventory(this.#input.projectDir, this.#input.registry);
     const head = await readHeadState(this.#input.projectDir);
+
+    // Not writing the log is no reason to answer the question wrongly. The
+    // comparison against what the log already knows is free, and returning it
+    // is the difference between "nothing changed" and "I did not look" - which
+    // an empty list could not tell apart.
+    const previous = this.#lastKnownReading();
+    const events = deriveEvents(
+      previous,
+      reading,
+      {
+        projectId: this.#input.projectId,
+        from: previous?.at ?? reading.at,
+        to: reading.at,
+        commit: head.commit,
+        branch: head.branch,
+        // Nothing is written from here, so attributing the change to a dirty
+        // worktree would be spending a `git status` on a record that is never
+        // kept.
+        worktreeDirty: false,
+        source: "swept",
+      },
+      this.#input.store.nextPackageEventSeq(this.#input.projectId),
+    );
+
     return {
       at: reading.at,
       source: "swept",
-      events: [],
+      events,
       baseline: null,
       packageCount: reading.packages.length,
       commit: head.commit,
       unavailable: reading.unavailable,
+      recorded: false,
     };
   }
 
@@ -462,6 +496,8 @@ export class PackageWatcher {
       packageCount: reading.packages.length,
       commit: head.commit,
       unavailable: reading.unavailable,
+      // This sweep holds the lease, so whatever it found is in the log.
+      recorded: true,
     };
     this.#options.onSweep?.(result);
 
