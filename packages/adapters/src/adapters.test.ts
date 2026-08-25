@@ -7,6 +7,7 @@ import {
   normalizePythonName,
   parseRequirementLine,
   exactPins,
+  poetryAdapter,
 } from "./python.js";
 import { genericAdapter, buildReviewedRecipeStep } from "./generic.js";
 import { pnpmAdapter, yarnAdapter, bunAdapter } from "./node-alt.js";
@@ -514,5 +515,72 @@ describe("pnpm, Yarn, and Bun", () => {
     expect(planFor(yarnAdapter, "yarn", true, [".yarnrc.yml"])?.argv.join(" ")).toBe(
       "yarn install --immutable",
     );
+  });
+});
+
+describe("Poetry", () => {
+  const files = (present: string[], contents: Record<string, string> = {}): ProjectFiles => ({
+    entries: present,
+    async read(path: string) {
+      return contents[path] ?? null;
+    },
+    async exists(path: string) {
+      return present.includes(path);
+    },
+  });
+
+  it("claims a project with a poetry lockfile or a poetry table", async () => {
+    expect((await poetryAdapter.detect(files(["poetry.lock", "pyproject.toml"]))).detected).toBe(true);
+    expect(
+      (
+        await poetryAdapter.detect(files(["pyproject.toml"]), )
+      ).detected,
+    ).toBe(false);
+    const withTable = files(["pyproject.toml"], {
+      "pyproject.toml": '[tool.poetry]\nname = "x"\n',
+    });
+    expect((await poetryAdapter.detect(withTable)).detected).toBe(true);
+  });
+
+  it("keeps the virtualenv and cache inside the project", () => {
+    // Poetry's default is a virtualenv under the user's home. A rescue that
+    // built one there would be changing the machine, not the project.
+    const plan = poetryAdapter.planCommand(
+      {
+        adapterId: "python.poetry",
+        kind: "install_project_dependencies",
+        manager: "poetry",
+        workDir: ".",
+        frozen: true,
+        timeoutMs: 1000,
+      } as never,
+      { managedDir: "/work/app/.iwomc", files: { entries: [] } } as never,
+    );
+    expect(plan?.argv.join(" ")).toBe("poetry install --no-root");
+    const env = plan?.env ?? {};
+    expect(env["POETRY_VIRTUALENVS_IN_PROJECT"]).toBe("true");
+    // Set as well as the flag above, because that flag is documented to be
+    // ignored in some setups - and this one still lands inside the project.
+    expect(env["POETRY_VIRTUALENVS_PATH"]).toContain("/work/app/.iwomc");
+    expect(env["POETRY_CACHE_DIR"]).toContain("/work/app/.iwomc");
+    for (const value of Object.values(env)) {
+      expect(value.startsWith("/home") || value.startsWith("/Users") || value.includes("~")).toBe(false);
+    }
+  });
+
+  it("installs an undeclared package without rewriting pyproject.toml", () => {
+    // `poetry add` would edit the manifest, which a rescue must never do.
+    const plan = poetryAdapter.planCommand(
+      {
+        adapterId: "python.poetry",
+        kind: "apply_package_overlay",
+        manager: "poetry",
+        workDir: ".",
+        packages: [{ name: "requests", versionSpec: "==2.32.3", evidenceRefs: ["e"] }],
+        timeoutMs: 1000,
+      } as never,
+      { managedDir: "/m", files: { entries: [] } } as never,
+    );
+    expect(plan?.argv.join(" ")).toBe("poetry run pip install --no-input requests==2.32.3");
   });
 });

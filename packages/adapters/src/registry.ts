@@ -1,7 +1,7 @@
 import type { SupportLevel } from "@iwomc/contracts";
 import type { EnvironmentAdapter, ProjectFiles } from "./types.js";
 import { npmAdapter } from "./npm.js";
-import { pipAdapter, uvAdapter } from "./python.js";
+import { pipAdapter, uvAdapter, poetryAdapter } from "./python.js";
 import { genericAdapter } from "./generic.js";
 import { nodeAltAdapters } from "./node-alt.js";
 
@@ -87,7 +87,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "python",
     manager: "poetry",
     files: ["poetry.lock"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from poetry.lock. Rescue needs a reviewed `poetry install` recipe.",
   },
   {
@@ -374,5 +374,5 @@ export class AdapterRegistry {
 }
 
 export function defaultRegistry(): AdapterRegistry {
-  return new AdapterRegistry([npmAdapter, uvAdapter, pipAdapter, ...nodeAltAdapters, genericAdapter]);
+  return new AdapterRegistry([npmAdapter, uvAdapter, poetryAdapter, pipAdapter, ...nodeAltAdapters, genericAdapter]);
 }

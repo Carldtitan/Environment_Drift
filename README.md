@@ -122,7 +122,7 @@ checkout, and prove it with your own test command.
 | Ecosystem | Managers |
 | --- | --- |
 | Node.js | npm, pnpm, Yarn, Bun |
-| Python | pip, uv |
+| Python | pip, uv, Poetry |
 
 Every one of these installs **inside your project folder only**. Each keeps a
 machine-wide cache by default; IWOMC redirects it into the project's own
@@ -136,7 +136,7 @@ turn into a reviewed change — which puts the fix in the repository rather than
 on one more machine.
 
 **Recognised** — detected and reported, so a contract never silently omits
-them: Poetry, Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub,
+them: Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub,
 Mix, Conda, vcpkg, Conan, Homebrew, apt, Chocolatey, winget, and the version
 managers asdf, mise, Volta, SDKMAN and nvm.
 

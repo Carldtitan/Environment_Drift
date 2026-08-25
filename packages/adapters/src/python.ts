@@ -38,6 +38,7 @@ type ContractDrift = Omit<DriftFinding, "id" | "projectId" | "commit" | "detecte
 const REQUIREMENTS = "requirements.txt";
 const PYPROJECT = "pyproject.toml";
 const UV_LOCK = "uv.lock";
+const POETRY_LOCK = "poetry.lock";
 const VENV_DIR = ".venv";
 
 /** Distributions every virtual environment ships with; not project drift. */
@@ -114,7 +115,7 @@ interface PythonDeclaration {
 
 async function readPythonDeclaration(
   files: ProjectFiles,
-  manager: "pip" | "uv",
+  manager: "pip" | "uv" | "poetry",
 ): Promise<PythonDeclaration> {
   const declaredFiles: string[] = [];
   const packages: PackageRequirement[] = [];
@@ -309,7 +310,7 @@ function observeFromArgv(
 
 abstract class PythonAdapterBase implements EnvironmentAdapter {
   abstract readonly manifest: AdapterManifest;
-  protected abstract readonly managerName: "pip" | "uv";
+  protected abstract readonly managerName: "pip" | "uv" | "poetry";
 
   abstract detect(files: ProjectFiles): Promise<Detection>;
 
@@ -1030,8 +1031,164 @@ export class UvAdapter extends PythonAdapterBase {
   }
 }
 
+/**
+ * Poetry.
+ *
+ * The one thing that matters here is where the environment goes. Poetry's
+ * default is a virtualenv under its own cache directory in the user's home -
+ * which would mean a rescue changing the machine rather than the project, the
+ * single thing this product promises not to do.
+ *
+ * So every command below pins the environment and the cache inside the
+ * project. `virtualenvs.in-project` is set, and `virtualenvs.path` is set as
+ * well: the first is documented to be ignored in some setups, and the second
+ * keeps the environment inside the project even when it is.
+ */
+export class PoetryAdapter extends PythonAdapterBase {
+  protected readonly managerName = "poetry" as const;
+
+  readonly manifest: AdapterManifest = {
+    id: "python.poetry",
+    ecosystem: "python",
+    manager: "poetry",
+    support: "native",
+    declaredFiles: [PYPROJECT, POETRY_LOCK],
+    capabilities: {
+      detect: true,
+      readDeclaredState: true,
+      inventory: true,
+      compile: true,
+      materialize: true,
+      verify: true,
+    },
+    conformanceTested: true,
+    supportNote:
+      "Reads pyproject.toml and poetry.lock, inventories the project-local .venv without running a command, and installs the locked environment with Poetry. The virtualenv and cache are both pinned inside the project, because Poetry otherwise builds them in the user's home directory.",
+  };
+
+  async detect(files: ProjectFiles): Promise<Detection> {
+    const signals: string[] = [];
+    if (await files.exists(POETRY_LOCK)) signals.push(POETRY_LOCK);
+    const pyproject = await files.read(PYPROJECT);
+    if (pyproject !== null) {
+      const document = parseToml(pyproject);
+      if (tomlGet(document, "tool.poetry") !== undefined) signals.push(`${PYPROJECT}#tool.poetry`);
+      if (signals.length > 0) signals.push(PYPROJECT);
+    }
+    if (signals.length === 0) return { detected: false, signals, confidence: "low" };
+    return { detected: true, signals, confidence: signals.includes(POETRY_LOCK) ? "high" : "medium" };
+  }
+
+  protected buildSteps(
+    _bundle: EvidenceBundle,
+    declaredFiles: readonly string[],
+    overlay: readonly { name: string; versionSpec: string; evidenceRefs: string[] }[],
+    runtimes: readonly RuntimeRequirement[],
+  ): MaterializationStep[] {
+    const steps: MaterializationStep[] = [];
+    steps.push({
+      id: `${this.manifest.id}:tool`,
+      kind: "ensure_system_tool",
+      adapterId: this.manifest.id,
+      workDir: ".",
+      idempotencyKey: "poetry-tool-present",
+      description: "Poetry must be available on PATH.",
+      tool: "poetry",
+      probeArgv: ["poetry", "--version"],
+      installHint: "Install Poetry from https://python-poetry.org/ and make it available on PATH.",
+    });
+
+    const frozen = declaredFiles.includes(POETRY_LOCK);
+    steps.push({
+      id: `${this.manifest.id}:install`,
+      kind: "install_project_dependencies",
+      adapterId: this.manifest.id,
+      workDir: ".",
+      idempotencyKey: `poetry-install-${digestOf({ declaredFiles, runtimes }).slice(7, 27)}`,
+      description: frozen
+        ? "Install exactly what poetry.lock pins, into a virtualenv inside the project."
+        : "Resolve and install the declared dependencies into a virtualenv inside the project (no poetry.lock is committed).",
+      manager: "poetry",
+      manifest: PYPROJECT,
+      ...(frozen ? { lockfile: POETRY_LOCK } : {}),
+      frozen,
+      timeoutMs: 900_000,
+    });
+
+    if (overlay.length > 0) {
+      steps.push({
+        id: `${this.manifest.id}:overlay`,
+        kind: "apply_package_overlay",
+        adapterId: this.manifest.id,
+        workDir: ".",
+        idempotencyKey: `poetry-overlay-${digestOf(overlay).slice(7, 27)}`,
+        description: `Install ${overlay.length} distribution${
+          overlay.length === 1 ? "" : "s"
+        } the evidence shows were used but the repository does not declare. pyproject.toml and poetry.lock are not modified.`,
+        manager: "poetry",
+        packages: overlay.map((entry) => ({
+          name: entry.name,
+          versionSpec: entry.versionSpec,
+          evidenceRefs: entry.evidenceRefs.length > 0 ? entry.evidenceRefs : ["observed-process"],
+        })),
+        timeoutMs: 900_000,
+      });
+    }
+    return steps;
+  }
+
+  planCommand(step: MaterializationStep, ctx: MaterializationContext): CommandPlan | null {
+    if (step.adapterId !== this.manifest.id) return null;
+
+    // Poetry builds its environment in the user's home unless told otherwise.
+    // Both settings are given: the documented one, and the explicit path that
+    // still lands inside the project if the documented one is ignored.
+    const env = {
+      POETRY_VIRTUALENVS_IN_PROJECT: "true",
+      POETRY_VIRTUALENVS_CREATE: "true",
+      POETRY_VIRTUALENVS_PATH: `${ctx.managedDir}/poetry-venvs`,
+      POETRY_CACHE_DIR: `${ctx.managedDir}/poetry-cache`,
+      POETRY_NO_INTERACTION: "1",
+    };
+
+    if (step.kind === "install_project_dependencies") {
+      return {
+        // `--no-root` installs the dependencies without installing the project
+        // itself, which is what a rescue needs and what a library project
+        // would otherwise refuse without a build backend.
+        argv: ["poetry", "install", "--no-root"],
+        workDir: step.workDir,
+        env,
+        timeoutMs: step.timeoutMs,
+        expectedExitCodes: [0],
+      };
+    }
+    if (step.kind === "apply_package_overlay") {
+      return {
+        // `poetry run pip install` puts the package in the project's own
+        // environment without touching pyproject.toml, which `poetry add`
+        // would rewrite.
+        argv: [
+          "poetry",
+          "run",
+          "pip",
+          "install",
+          "--no-input",
+          ...step.packages.map((pkg) => `${pkg.name}${pkg.versionSpec}`),
+        ],
+        workDir: step.workDir,
+        env,
+        timeoutMs: step.timeoutMs,
+        expectedExitCodes: [0],
+      };
+    }
+    return null;
+  }
+}
+
 export const pipAdapter = new PipAdapter();
 export const uvAdapter = new UvAdapter();
+export const poetryAdapter = new PoetryAdapter();
 export { VENV_DIR, REQUIREMENTS, PYPROJECT, UV_LOCK };
 
 /**

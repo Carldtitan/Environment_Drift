@@ -13,7 +13,7 @@ what this build can actually do for each one.
 | node | bun | **native** - IWOMC compiles, materializes, and verifies this itself | `bun.lockb`, `bun.lock`, `bunfig.toml` | Recognised from its lockfile. Rescue needs a reviewed `bun install --frozen-lockfile` recipe. |
 | python | pip | **native** - IWOMC compiles, materializes, and verifies this itself | `requirements.txt`, `requirements-dev.txt`, `setup.py`, `setup.cfg` | Full loop: declared state, project-local .venv, install, verification. |
 | python | uv | **native** - IWOMC compiles, materializes, and verifies this itself | `uv.lock` | Full loop: locked sync into a project-local .venv, then verification. |
-| python | poetry | **recipe** - recognised; rescue needs a reviewed setup command | `poetry.lock` | Recognised from poetry.lock. Rescue needs a reviewed `poetry install` recipe. |
+| python | poetry | **native** - IWOMC compiles, materializes, and verifies this itself | `poetry.lock` | Recognised from poetry.lock. Rescue needs a reviewed `poetry install` recipe. |
 | python | conda | **observe only** - recorded, never changed by IWOMC | `environment.yml`, `environment.yaml` | Conda environments live outside the project directory; IWOMC records the requirement but will not create one. |
 | rust | cargo | **recipe** - recognised; rescue needs a reviewed setup command | `Cargo.toml`, `Cargo.lock` | Recognised from Cargo.toml. Rescue needs a reviewed `cargo fetch`/`cargo build` recipe. |
 | go | go | **recipe** - recognised; rescue needs a reviewed setup command | `go.mod`, `go.sum` | Recognised from go.mod. Rescue needs a reviewed `go mod download` recipe. |
@@ -42,6 +42,7 @@ what this build can actually do for each one.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `node.npm` | yes | yes | yes | yes | yes | yes | yes |
 | `python.uv` | yes | yes | yes | yes | yes | yes | yes |
+| `python.poetry` | yes | yes | yes | yes | yes | yes | yes |
 | `python.pip` | yes | yes | yes | yes | yes | yes | yes |
 | `node.pnpm` | yes | yes | yes | yes | yes | yes | yes |
 | `node.yarn` | yes | yes | yes | yes | yes | yes | yes |
