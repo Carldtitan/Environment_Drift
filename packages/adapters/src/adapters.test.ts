@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultRegistry, ECOSYSTEM_PROBES, recognizeEcosystems } from "./registry.js";
 import { npmAdapter, parseSpecifier, parseLockedVersions } from "./npm.js";
@@ -617,6 +618,38 @@ describe("Cargo and Go", () => {
     }
   });
 
+  it("gives an absolute cache path, because Go refuses a relative one", () => {
+    const projectDir = resolve("work", "app");
+    const elsewhere = resolve("elsewhere");
+
+    // IWOMC hands adapters the project-relative `.iwomc`. Cargo resolves that
+    // against the working directory; Go rejects it outright, and every fetch
+    // failed until this resolved the path first.
+    for (const { adapter, id } of cases) {
+      const environment = {
+        ...adapter.projectEnvironment?.({ projectDir: projectDir, managedDir: ".iwomc" } as never),
+      };
+      // Only the entries that name a directory; some carry settings instead.
+      const paths = Object.entries(environment).filter(([, value]) => value.includes(".iwomc"));
+      expect(paths.length, `${id} must point at least one cache into the project`).toBeGreaterThan(0);
+      for (const [name, value] of paths) {
+        // Absoluteness is what Go checks, and it is spelled differently on
+        // Windows, so ask the platform rather than matching a leading slash.
+        expect(isAbsolute(value), `${id} ${name} must be absolute, got ${value}`).toBe(true);
+        expect(value.startsWith(projectDir), `${id} ${name} must be inside the project`).toBe(true);
+      }
+      // An absolute managed directory is used as given rather than doubled up.
+      const already = {
+        ...adapter.projectEnvironment?.({ projectDir, managedDir: elsewhere } as never),
+      };
+      const elsewherePaths = Object.values(already).filter((value) => value.includes("elsewhere"));
+      expect(elsewherePaths.length, id).toBeGreaterThan(0);
+      for (const value of elsewherePaths) {
+        expect(value.startsWith(elsewhere)).toBe(true);
+      }
+    }
+  });
+
   it("keeps every download inside the project", () => {
     // Cargo fills ~/.cargo and Go fills the module cache under the user's home.
     // Either would be changing the machine rather than the project.
@@ -629,7 +662,7 @@ describe("Cargo and Go", () => {
           frozen: true,
           timeoutMs: 1000,
         } as never,
-        { managedDir: "/work/app/.iwomc" } as never,
+        { projectDir: "/work/app", managedDir: "/work/app/.iwomc" } as never,
       );
       const values = Object.values(plan?.env ?? {});
       expect(
@@ -771,7 +804,8 @@ describe("using what was installed, not just installing it", () => {
     // and fixed nothing. These two find their dependencies only through an
     // environment variable, so the adapter has to say which one.
     for (const adapter of [cargoAdapter, goAdapter]) {
-      const environment = adapter.projectEnvironment?.({ managedDir: "/work/app/.iwomc" } as never) ?? {};
+      const environment =
+        adapter.projectEnvironment?.({ projectDir: "/work/app", managedDir: "/work/app/.iwomc" } as never) ?? {};
       const values = Object.values(environment);
       expect(values.length, adapter.manifest.id).toBeGreaterThan(0);
       expect(
@@ -793,9 +827,9 @@ describe("using what was installed, not just installing it", () => {
           frozen: true,
           timeoutMs: 1000,
         } as never,
-        { managedDir: "/m" } as never,
+        { projectDir: "/w", managedDir: "/m" } as never,
       );
-      const usage = adapter.projectEnvironment?.({ managedDir: "/m" } as never) ?? {};
+      const usage = adapter.projectEnvironment?.({ projectDir: "/w", managedDir: "/m" } as never) ?? {};
       for (const [name, value] of Object.entries(usage)) {
         expect(install?.env?.[name], `${adapter.manifest.id} ${name}`).toBe(value);
       }

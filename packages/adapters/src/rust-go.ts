@@ -21,6 +21,7 @@
  * rather than pretending the check happened.
  */
 
+import { isAbsolute, resolve } from "node:path";
 import { digestOf } from "@iwomc/contracts";
 import { parseToml, tomlGet, tomlString } from "./toml.js";
 import type {
@@ -59,8 +60,12 @@ interface LanguageProfile {
   /** The command that installs exactly what the lockfile pins. */
   frozenArgv(): readonly string[];
   looseArgv(): readonly string[];
-  /** Environment that keeps the download cache inside the project. */
-  cacheEnv(managedDir: string): Readonly<Record<string, string>>;
+  /**
+   * Environment that keeps the download cache inside the project.
+   *
+   * Takes an absolute path: Go rejects a relative GOMODCACHE or GOCACHE.
+   */
+  cacheEnv(cacheRoot: string): Readonly<Record<string, string>>;
   /** Direct dependencies and the required language version, from the manifest. */
   readDeclared(manifest: string): {
     packages: { name: string; versionSpec: string }[];
@@ -81,10 +86,10 @@ const CARGO: LanguageProfile = {
   // needs: reproduce, never resolve.
   frozenArgv: () => ["cargo", "fetch", "--locked"],
   looseArgv: () => ["cargo", "fetch"],
-  cacheEnv: (managedDir) => ({
+  cacheEnv: (cacheRoot) => ({
     // Cargo puts its registry index and downloaded crates under CARGO_HOME,
     // which defaults to the user's home directory.
-    CARGO_HOME: `${managedDir}/cargo-home`,
+    CARGO_HOME: `${cacheRoot}/cargo-home`,
     CARGO_TERM_COLOR: "never",
   }),
   readDeclared(manifest) {
@@ -123,11 +128,11 @@ const GO: LanguageProfile = {
   // whether or not it is named on the command line.
   frozenArgv: () => ["go", "mod", "download"],
   looseArgv: () => ["go", "mod", "download"],
-  cacheEnv: (managedDir) => ({
+  cacheEnv: (cacheRoot) => ({
     // Go's module cache and build cache both live under the user's home by
     // default.
-    GOMODCACHE: `${managedDir}/go-mod`,
-    GOCACHE: `${managedDir}/go-build`,
+    GOMODCACHE: `${cacheRoot}/go-mod`,
+    GOCACHE: `${cacheRoot}/go-build`,
     GOFLAGS: "-mod=mod",
   }),
   readDeclared(manifest) {
@@ -166,6 +171,19 @@ const GO: LanguageProfile = {
     return { packages, runtime };
   },
 };
+
+/**
+ * The project's cache directory, as an absolute path.
+ *
+ * `ctx.managedDir` is the project-relative `.iwomc`, which is enough for
+ * Cargo - it resolves a relative CARGO_HOME against the working directory -
+ * but Go refuses a relative GOMODCACHE or GOCACHE outright, so every fetch
+ * failed with the directory named right there in the error. Resolving it here
+ * means both get an absolute path and neither has to care.
+ */
+function cacheRoot(ctx: { projectDir: string; managedDir: string }): string {
+  return isAbsolute(ctx.managedDir) ? ctx.managedDir : resolve(ctx.projectDir, ctx.managedDir);
+}
 
 function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
   return {
@@ -377,7 +395,7 @@ function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
         workDir: step.workDir,
         // Both download into the user's home by default. Redirecting that is
         // what keeps a rescue inside the project it was pointed at.
-        env: profile.cacheEnv(ctx.managedDir),
+        env: profile.cacheEnv(cacheRoot(ctx)),
         timeoutMs: step.timeoutMs,
         expectedExitCodes: [0],
       };
@@ -396,7 +414,7 @@ function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
         // The rescue filled a cache inside the project, not the machine-wide
         // default. Verifying without this would read an empty ~/.cargo or
         // module cache and fail a rescue that in fact succeeded.
-        env: profile.cacheEnv(ctx.managedDir),
+        env: profile.cacheEnv(cacheRoot(ctx)),
       });
       return {
         adapterId: profile.id,
@@ -419,7 +437,7 @@ function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
       // The same redirect the fetch used. Anything less and the project's own
       // build command reads the machine-wide cache, finds nothing there, and
       // fails after a rescue that did everything right.
-      return profile.cacheEnv(ctx.managedDir);
+      return profile.cacheEnv(cacheRoot(ctx));
     },
 
     async proposeRepair(): Promise<readonly ProposedFileChange[]> {
