@@ -211,7 +211,25 @@ describe.each(CASES)("$name: repair a checkout without touching the machine", (s
     const rescue = await runIwomc(["rescue", "--json", "--approve"], { cwd: follower, env: sandbox.env });
     const after = await countFiles(machineCache);
 
-    expect(rescue.json<{ state: string }>().state).toBe("working");
+    const outcome = rescue.json<{
+      state: string;
+      blocker: { code: string; message: string } | null;
+      proof: { exitCode: number | null } | null;
+      events?: { kind: string; message: string }[];
+    }>();
+    // A bare "expected 'blocked' to be 'working'" says nothing about why, which
+    // on a machine you cannot log into is the whole of the diagnosis.
+    const why =
+      outcome.state === "working"
+        ? ""
+        : `${outcome.blocker?.code}: ${outcome.blocker?.message} | proof exit ${outcome.proof?.exitCode} | ${(
+            outcome.events ?? []
+          )
+            .filter((event) => event.kind === "proof_output" || event.kind === "step_failed")
+            .map((event) => event.message)
+            .join(" / ")
+            .slice(0, 1200)}`;
+    expect(outcome.state, why).toBe("working");
     expect(rescue.exitCode).toBe(EXIT.ok);
 
     // The whole promise, measured rather than asserted: the machine-wide cache
