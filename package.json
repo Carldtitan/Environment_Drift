@@ -31,16 +31,22 @@
     "capability-matrix:check": "node scripts/capability-matrix.ts --check"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4",
-    "@iwomc/contracts": "workspace:*",
     "@iwomc/adapters": "workspace:*",
-    "@iwomc/companion": "workspace:*",
-    "@iwomc/integrations": "workspace:*",
-    "@iwomc/control-plane": "workspace:*",
-    "@iwomc/testkit": "workspace:*",
     "@iwomc/cli": "workspace:*",
-    "playwright": "^1.56.0"
+    "@iwomc/companion": "workspace:*",
+    "@iwomc/contracts": "workspace:*",
+    "@iwomc/control-plane": "workspace:*",
+    "@iwomc/integrations": "workspace:*",
+    "@iwomc/testkit": "workspace:*",
+    "@railway/cli": "^5.43.3",
+    "@types/node": "^24.10.1",
+    "playwright": "^1.56.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@railway/cli"
+    ]
   }
 }
