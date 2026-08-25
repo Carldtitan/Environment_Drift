@@ -14,7 +14,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const release = join(root, "release", "iwomc");
 // A feature release: the package timeline, autocapture, team contract
 // selection, and cross-platform application.
-const CLI_VERSION = "0.3.0";
+const CLI_VERSION = "0.4.0";
 
 const internal = ["contracts", "adapters", "companion", "control-plane", "integrations"];
 
@@ -167,9 +167,23 @@ await writeFile(
     "",
     "## Supported today",
     "",
-    "npm, pip, and uv are fully supported: detected, recorded, repaired, and verified.",
-    "About 25 further package managers are recognised and reported honestly as not yet",
-    "repairable, rather than claimed as supported.",
+    "Nine package managers are detected, recorded, repaired, and verified:",
+    "",
+    "| Ecosystem | Managers |",
+    "| --- | --- |",
+    "| Node.js | npm, pnpm, Yarn, Bun |",
+    "| Python | pip, uv, Poetry |",
+    "| Rust | Cargo |",
+    "| Go | Go modules |",
+    "",
+    "Every one of them installs inside your project folder only. Each keeps a",
+    "machine-wide cache by default - `~/.cargo`, `~/.npm`, Go's module cache - and IWOMC",
+    "redirects every one into the project's own `.iwomc` directory, so a rescue never",
+    "changes anything outside the checkout it was pointed at.",
+    "",
+    "Nineteen more are recognised and reported honestly as not yet repairable, rather",
+    "than claimed as supported. `iwomc status` names the level for the project you are",
+    "in.",
     "",
     "## More",
     "",

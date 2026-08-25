@@ -123,22 +123,32 @@ checkout, and prove it with your own test command.
 | --- | --- |
 | Node.js | npm, pnpm, Yarn, Bun |
 | Python | pip, uv, Poetry |
+| Rust | Cargo |
+| Go | Go modules |
 
 Every one of these installs **inside your project folder only**. Each keeps a
-machine-wide cache by default; IWOMC redirects it into the project's own
-`.iwomc` directory, so a rescue never changes anything outside the checkout it
-was pointed at.
+machine-wide cache by default — `~/.cargo`, `~/.npm`, Go's module cache, and so
+on — and IWOMC redirects every one of them into the project's own `.iwomc`
+directory. A rescue never changes anything outside the checkout it was pointed
+at. The cost, stated rather than hidden: a project-local cache is not shared
+between projects, so the first rescue downloads what it needs again.
 
-One honest limit for pnpm and Yarn: they cannot install a package without
-editing `package.json`, and a rescue never edits a tracked file. So a package
-that is installed but undeclared is reported as drift for `iwomc promote` to
-turn into a reviewed change — which puts the fix in the repository rather than
-on one more machine.
+Two honest limits.
+
+pnpm and Yarn cannot install a package without editing `package.json`, and a
+rescue never edits a tracked file. So a package that is installed but
+undeclared is reported as drift for `iwomc promote` to turn into a reviewed
+change — which puts the fix in the repository rather than on one more machine.
+
+Cargo and Go do not keep dependencies in a readable project folder the way
+`node_modules` does, so IWOMC cannot list what is actually installed for them.
+It repairs and verifies those projects, but it says plainly that it could not
+take an inventory rather than reporting a clean check it never ran.
 
 **Recognised** — detected and reported, so a contract never silently omits
-them: Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub,
-Mix, Conda, vcpkg, Conan, Homebrew, apt, Chocolatey, winget, and the version
-managers asdf, mise, Volta, SDKMAN and nvm.
+them: Maven, Gradle, NuGet, Bundler, Composer, pub, Mix, Conda, vcpkg, Conan,
+Homebrew, apt, Chocolatey, winget, and the version managers asdf, mise, Volta,
+SDKMAN and nvm.
 
 `iwomc status` names the level for the project you are in, and
 [docs/capability-matrix.md](docs/capability-matrix.md) is generated from what
