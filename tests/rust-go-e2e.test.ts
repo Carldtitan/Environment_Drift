@@ -160,9 +160,24 @@ describe.each(CASES)("$name: repair a checkout without touching the machine", (s
   }, 1_800_000);
 
   afterAll(async () => {
-    if (follower) await rm(follower, { recursive: true, force: true });
-    await project?.cleanup();
-    await sandbox?.cleanup();
+    if (follower) {
+      // Go makes its module cache read-only, directories included, so an
+      // ordinary recursive delete fails on it - the same wall anyone hits
+      // deleting a checkout IWOMC has fetched into. `go clean -modcache` is
+      // Go's own answer, and running it here proves the remedy this project
+      // documents actually works.
+      if (subject.name === "Go") {
+        await run(["go", "clean", "-modcache"], {
+          cwd: follower,
+          timeoutMs: 300_000,
+          envAllowlist: null,
+          env: { GOMODCACHE: join(follower, ".iwomc", "go-mod") },
+        }).catch(() => null);
+      }
+      await rm(follower, { recursive: true, force: true }).catch(() => null);
+    }
+    await project?.cleanup().catch(() => null);
+    await sandbox?.cleanup().catch(() => null);
   });
 
   it("is recognised as something IWOMC can repair itself", async () => {

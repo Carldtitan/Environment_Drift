@@ -145,6 +145,11 @@ Cargo and Go do not keep dependencies in a readable project folder the way
 It repairs and verifies those projects, but it says plainly that it could not
 take an inventory rather than reporting a clean check it never ran.
 
+Go additionally marks everything in its module cache read-only, directories
+included, so once IWOMC has fetched into a checkout, deleting that checkout
+needs `go clean -modcache` first. That is Go's behaviour rather than IWOMC's,
+but it is IWOMC that puts the cache there, so it is worth saying plainly.
+
 They also find their dependencies only through an environment variable, and
 IWOMC points that variable inside the project. It sets it for the proof command
 it runs, and then prints what to set in your own shell — it cannot change your

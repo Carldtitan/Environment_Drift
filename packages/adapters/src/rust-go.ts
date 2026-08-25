@@ -131,6 +131,11 @@ const GO: LanguageProfile = {
   cacheEnv: (cacheRoot) => ({
     // Go's module cache and build cache both live under the user's home by
     // default.
+    //
+    // One consequence worth knowing about: Go makes everything in its module
+    // cache read-only, directories included, so `rm -rf` on a checkout fails
+    // once this has been filled. `go clean -modcache` is Go's own answer, and
+    // the support note says so.
     GOMODCACHE: `${cacheRoot}/go-mod`,
     GOCACHE: `${cacheRoot}/go-build`,
     GOFLAGS: "-mod=mod",
@@ -204,7 +209,11 @@ function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
         verify: true,
       },
       conformanceTested: true,
-      supportNote: `Reads ${profile.manifestFile} and ${profile.lockFile} and fetches exactly what the lockfile pins, with ${profile.manager}'s cache redirected inside the project so nothing outside it changes. It cannot inventory what is installed: ${profile.manager} does not keep dependencies in a readable project folder.`,
+      supportNote: `Reads ${profile.manifestFile} and ${profile.lockFile} and fetches exactly what the lockfile pins, with ${profile.manager}'s cache redirected inside the project so nothing outside it changes. It cannot inventory what is installed: ${profile.manager} does not keep dependencies in a readable project folder.${
+        profile.ecosystem === "go"
+          ? " Go marks its module cache read-only, so deleting this checkout needs `go clean -modcache` first."
+          : ""
+      }`,
     } satisfies AdapterManifest,
 
     async detect(files: ProjectFiles): Promise<Detection> {
