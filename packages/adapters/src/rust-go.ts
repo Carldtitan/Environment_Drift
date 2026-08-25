@@ -415,6 +415,13 @@ function createAdapter(profile: LanguageProfile): EnvironmentAdapter {
       };
     },
 
+    projectEnvironment(ctx: MaterializationContext): Readonly<Record<string, string>> {
+      // The same redirect the fetch used. Anything less and the project's own
+      // build command reads the machine-wide cache, finds nothing there, and
+      // fails after a rescue that did everything right.
+      return profile.cacheEnv(ctx.managedDir);
+    },
+
     async proposeRepair(): Promise<readonly ProposedFileChange[]> {
       // Nothing is inventoried, so there is no observed-but-undeclared state
       // to propose a repair for.

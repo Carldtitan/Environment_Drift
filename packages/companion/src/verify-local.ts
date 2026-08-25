@@ -12,7 +12,7 @@ import {
 import type { AdapterRegistry, MaterializationContext } from "@iwomc/adapters";
 import { probe, run } from "./exec.js";
 import { materialize } from "./materialize.js";
-import { runProof } from "./proof.js";
+import { adapterProjectEnvironment, runProof } from "./proof.js";
 import { MANAGED_DIR } from "./paths.js";
 import { FileSystemProjectFiles } from "./project.js";
 import type {
@@ -168,7 +168,13 @@ export class LocalFreshDirectoryVerifier implements VerifierPort {
           projectDir,
           assurance: "locally_checked",
           emit: (event) => record(event.kind, event.message),
-          env: projectLocalPath(projectDir, request.platform.os),
+          env: {
+            ...projectLocalPath(projectDir, request.platform.os),
+            // Same reason as in rescue: an adapter whose cache IWOMC pointed
+            // inside the project needs that variable set, or the proof reads
+            // the machine-wide cache and fails on a contract that is fine.
+            ...adapterProjectEnvironment(request.contract, this.#registry, context),
+          },
           ...(request.signal ? { signal: request.signal } : {}),
           now: this.#now,
         });

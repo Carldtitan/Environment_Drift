@@ -763,3 +763,50 @@ describe("Cargo and Go", () => {
     expect(verification.checks[0]?.detail).toContain("lock file needs to be updated");
   });
 });
+
+describe("using what was installed, not just installing it", () => {
+  it("hands back the environment Cargo and Go need to find their own cache", () => {
+    // A rescue that fetches into the project and then leaves the project's own
+    // build command reading the machine-wide cache has installed successfully
+    // and fixed nothing. These two find their dependencies only through an
+    // environment variable, so the adapter has to say which one.
+    for (const adapter of [cargoAdapter, goAdapter]) {
+      const environment = adapter.projectEnvironment?.({ managedDir: "/work/app/.iwomc" } as never) ?? {};
+      const values = Object.values(environment);
+      expect(values.length, adapter.manifest.id).toBeGreaterThan(0);
+      expect(
+        values.every((value) => value.startsWith("/work/app/.iwomc") || !value.includes("/")),
+        `${adapter.manifest.id} must point at the project's own cache`,
+      ).toBe(true);
+    }
+  });
+
+  it("points at exactly the cache the install filled", () => {
+    // If these two disagreed, the fetch would fill one directory and the build
+    // would read another - which is the bug this exists to prevent.
+    for (const adapter of [cargoAdapter, goAdapter]) {
+      const install = adapter.planCommand(
+        {
+          adapterId: adapter.manifest.id,
+          kind: "install_project_dependencies",
+          workDir: ".",
+          frozen: true,
+          timeoutMs: 1000,
+        } as never,
+        { managedDir: "/m" } as never,
+      );
+      const usage = adapter.projectEnvironment?.({ managedDir: "/m" } as never) ?? {};
+      for (const [name, value] of Object.entries(usage)) {
+        expect(install?.env?.[name], `${adapter.manifest.id} ${name}`).toBe(value);
+      }
+    }
+  });
+
+  it("asks for nothing where the dependencies are already on a path", () => {
+    // npm, pnpm, Yarn, Bun and Poetry all put what they install inside the
+    // checkout, where the project's own commands already find it.
+    for (const adapter of [npmAdapter, pnpmAdapter, poetryAdapter]) {
+      expect(adapter.projectEnvironment, adapter.manifest.id).toBeUndefined();
+    }
+  });
+});

@@ -262,6 +262,21 @@ export interface EnvironmentAdapter {
   planCommand(step: MaterializationStep, ctx: MaterializationContext): CommandPlan | null;
   verifyAfterMaterialize(ctx: MaterializationContext): Promise<AdapterVerification>;
   /**
+   * Environment a person needs for the project's own commands to find what
+   * this adapter installed.
+   *
+   * Node and Python put their dependencies on a path: `node_modules/.bin` and
+   * `.venv/bin` are inside the checkout, so `npm test` finds them with no help.
+   * Cargo and Go find theirs only through an environment variable, and IWOMC
+   * points that variable inside the project. Without this, a rescue would fill
+   * a cache the project's own build command then could not see - installing
+   * successfully and leaving the project just as broken.
+   *
+   * Omit it when the installed state needs nothing set to be usable.
+   */
+  projectEnvironment?(ctx: MaterializationContext): Readonly<Record<string, string>>;
+
+  /**
    * Repository repair proposed by `promote`, as a plain file diff.
    *
    * `pending` carries content already proposed by earlier findings for the same

@@ -145,6 +145,12 @@ Cargo and Go do not keep dependencies in a readable project folder the way
 It repairs and verifies those projects, but it says plainly that it could not
 take an inventory rather than reporting a clean check it never ran.
 
+They also find their dependencies only through an environment variable, and
+IWOMC points that variable inside the project. It sets it for the proof command
+it runs, and then prints what to set in your own shell — it cannot change your
+shell for you, and without it your next `cargo build` would go to the network
+and fill your home directory instead.
+
 **Recognised** — detected and reported, so a contract never silently omits
 them: Maven, Gradle, NuGet, Bundler, Composer, pub, Mix, Conda, vcpkg, Conan,
 Homebrew, apt, Chocolatey, winget, and the version managers asdf, mise, Volta,

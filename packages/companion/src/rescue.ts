@@ -23,7 +23,7 @@ import { probe } from "./exec.js";
 import { assessPortability, describePortability } from "./portability.js";
 import { buildProjectRedactor } from "./capture.js";
 import { materialize } from "./materialize.js";
-import { runProof } from "./proof.js";
+import { adapterProjectEnvironment, runProof } from "./proof.js";
 import { MANAGED_DIR, managedDirFor } from "./paths.js";
 import { digestDeclaredFiles, type ProjectContext } from "./project.js";
 import type { CompanionStore } from "./store.js";
@@ -70,6 +70,16 @@ export interface RescueResult {
   readonly proof: ProofAttempt | null;
   readonly explanations: readonly MemoryHit[];
   readonly memoryDetail: string;
+  /**
+   * Environment the project's own commands need in order to see what was
+   * installed.
+   *
+   * IWOMC sets this for the proof it runs, but it cannot set it in the
+   * person's shell. Where it is not empty - Cargo and Go, whose caches IWOMC
+   * points inside the project - saying nothing would leave someone with a
+   * rescue that passed and a `cargo build` that still went to the network.
+   */
+  readonly projectEnvironment: Readonly<Record<string, string>>;
 }
 
 const DEFAULT_MIN_FREE_BYTES = 512 * 1024 * 1024;
@@ -153,6 +163,11 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
     });
   }
 
+  // Filled in just before the proof runs. A run that blocks earlier than that
+  // finishes with it empty, which is exactly true of that run: nothing was
+  // installed, so there is nothing to point at.
+  let usageEnvironment: Readonly<Record<string, string>> = {};
+
   const finish = async (
     terminal: RescueTerminalState,
     stepsApplied: readonly string[],
@@ -232,6 +247,7 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
       outcome,
       events,
       blocker: failure,
+      projectEnvironment: usageEnvironment,
       proof: proofAttempt,
       explanations,
       memoryDetail,
@@ -365,12 +381,25 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
   // -- Prove --------------------------------------------------------------
   setState("proving", "Running the project's proof command.");
 
+  // What the project's own command needs in order to see what was just
+  // installed. For Node and Python that is a path inside the checkout; for
+  // Cargo and Go it is the variable that points at the project's cache, and
+  // without it the proof reads the machine-wide cache and fails after a rescue
+  // that did everything right.
+  usageEnvironment = adapterProjectEnvironment(input.contract, input.registry, materializationContext);
+  for (const [name, value] of Object.entries(usageEnvironment)) {
+    emit({ kind: "preflight_check", message: `Proof will run with ${name} set to ${value}.` });
+  }
+
   const proofResult = await runProof({
     proof: input.contract.proof,
     projectDir: input.project.projectDir,
     assurance,
     emit,
-    env: projectLocalPathEnv(input.project.projectDir, input.project.platform.os),
+    env: {
+      ...projectLocalPathEnv(input.project.projectDir, input.project.platform.os),
+      ...usageEnvironment,
+    },
     ...(input.signal ? { signal: input.signal } : {}),
     now,
   });

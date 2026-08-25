@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { blocker, type Blocker, type ProofAttempt, type ProofCommand, type RescueEvent, type VerificationAssurance } from "@iwomc/contracts";
+import {
+  blocker,
+  type Blocker,
+  type EnvironmentContractV1,
+  type ProofAttempt,
+  type ProofCommand,
+  type RescueEvent,
+  type VerificationAssurance,
+} from "@iwomc/contracts";
+import type { AdapterRegistry, MaterializationContext } from "@iwomc/adapters";
 import { run } from "./exec.js";
 import { parseCommandLine } from "./command.js";
 import { resolveInsideProject } from "./paths.js";
@@ -162,4 +171,25 @@ export function draftProofCommand(input: ProofDraftInput): ProofCommand {
     ...(input.approvedBy ? { approvedBy: input.approvedBy } : {}),
     ...(input.approvedAt ? { approvedAt: input.approvedAt } : {}),
   };
+}
+
+/**
+ * The environment each of the contract's adapters says a person needs for the
+ * project's own commands to find what it installed.
+ *
+ * An adapter that needs nothing set contributes nothing, which is the usual
+ * case: `node_modules/.bin` and `.venv/bin` are already inside the checkout.
+ */
+export function adapterProjectEnvironment(
+  contract: EnvironmentContractV1,
+  registry: AdapterRegistry,
+  ctx: MaterializationContext,
+): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const adapterId of contract.adapters) {
+    const adapter = registry.byId(adapterId);
+    if (!adapter?.projectEnvironment) continue;
+    Object.assign(environment, adapter.projectEnvironment(ctx));
+  }
+  return environment;
 }

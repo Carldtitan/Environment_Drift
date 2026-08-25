@@ -268,6 +268,8 @@ interface RescueLike {
   readonly outcome: { stepsApplied: readonly string[]; assurance: string; journalDigest: string };
   readonly explanations: readonly { title: string; text: string; createdAt: string | null }[];
   readonly memoryDetail: string;
+  /** What the person still has to set for their own commands. Often empty. */
+  readonly projectEnvironment?: Readonly<Record<string, string>>;
 }
 
 export function renderRescue(result: RescueLike): string {
@@ -295,6 +297,25 @@ export function renderRescue(result: RescueLike): string {
       ["Journal", result.outcome.journalDigest.slice(0, 26)],
     ]),
   );
+
+  const usage = Object.entries(result.projectEnvironment ?? {});
+  if (usage.length > 0 && result.state === "working") {
+    // IWOMC set these for the proof it just ran. It cannot set them in a
+    // person's shell, and without them their own build goes to the network and
+    // fills the machine-wide cache - the one thing this was meant to avoid.
+    out.push(heading("Set these in your shell"));
+    out.push(
+      wrapText(
+        "This project's dependencies were fetched into a cache inside the checkout, not into your home directory. Your own commands need these set to find them.",
+      ),
+    );
+    out.push("");
+    for (const [name, value] of usage) {
+      out.push(`  ${style.bold(name)}=${value}`);
+    }
+    out.push("");
+    out.push(style.dim("  The proof command above already ran with them set."));
+  }
 
   if (result.explanations.length > 0) {
     out.push(heading("Why this environment looks like this"));
