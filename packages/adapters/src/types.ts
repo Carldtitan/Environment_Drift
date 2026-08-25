@@ -61,7 +61,17 @@ export interface ProbeResult {
 
 export type ProbeRunner = (
   argv: readonly string[],
-  options?: { readonly cwd?: string; readonly timeoutMs?: number },
+  options?: {
+    readonly cwd?: string;
+    readonly timeoutMs?: number;
+    /**
+     * Extra environment for the probe. Needed by adapters whose cache IWOMC
+     * redirects into the project: a verification that read the machine-wide
+     * default would be looking in the wrong place and would fail a rescue that
+     * actually worked.
+     */
+    readonly env?: Readonly<Record<string, string>>;
+  },
 ) => Promise<ProbeResult>;
 
 export interface DeclaredState {

@@ -11,6 +11,7 @@ import {
 } from "./python.js";
 import { genericAdapter, buildReviewedRecipeStep } from "./generic.js";
 import { pnpmAdapter, yarnAdapter, bunAdapter } from "./node-alt.js";
+import { cargoAdapter, goAdapter } from "./rust-go.js";
 import { parseToml, tomlString, tomlStringArray } from "./toml.js";
 import { satisfies, parseVersion, compareVersions } from "./semver.js";
 import { unifiedDiff } from "./diff.js";
@@ -279,8 +280,11 @@ describe("the ecosystem registry", () => {
     const registry = defaultRegistry();
     const native = await registry.supportLevelFor(filesOf({ "package.json": '{"name":"x"}' }));
     expect(native.support).toBe("native");
+    // Cargo used to be the example of a recipe here. It is native now, so the
+    // example moved rather than the assertion being loosened.
+    expect((await registry.supportLevelFor(filesOf({ "Cargo.toml": "[package]" }))).support).toBe("native");
 
-    const recipe = await registry.supportLevelFor(filesOf({ "Cargo.toml": "[package]" }));
+    const recipe = await registry.supportLevelFor(filesOf({ "pom.xml": "<project/>" }));
     expect(recipe.support).toBe("recipe");
     expect(recipe.reason).toContain("reviewed setup recipe");
 
@@ -582,5 +586,180 @@ describe("Poetry", () => {
       { managedDir: "/m", files: { entries: [] } } as never,
     );
     expect(plan?.argv.join(" ")).toBe("poetry run pip install --no-input requests==2.32.3");
+  });
+});
+
+describe("Cargo and Go", () => {
+  const files = (present: string[], contents: Record<string, string> = {}): ProjectFiles => ({
+    entries: present,
+    async read(path: string) {
+      return contents[path] ?? null;
+    },
+    async exists(path: string) {
+      return present.includes(path);
+    },
+  });
+
+  const cases = [
+    { adapter: cargoAdapter, id: "rust.cargo", manifest: "Cargo.toml", lock: "Cargo.lock" },
+    { adapter: goAdapter, id: "go.modules", manifest: "go.mod", lock: "go.sum" },
+  ] as const;
+
+  const ctx = (present: string[], contents: Record<string, string>) =>
+    ({ projectDir: "/work/app", files: files(present, contents), managedDir: "/work/app/.iwomc" }) as never;
+
+  it("claims a project by its manifest, not by its lockfile alone", async () => {
+    for (const { adapter, manifest, lock } of cases) {
+      expect((await adapter.detect(files([manifest, lock]))).detected, manifest).toBe(true);
+      // A lockfile with no manifest is not a project this can reproduce.
+      expect((await adapter.detect(files([lock]))).detected, lock).toBe(false);
+      expect((await adapter.detect(files(["package.json"]))).detected, manifest).toBe(false);
+    }
+  });
+
+  it("keeps every download inside the project", () => {
+    // Cargo fills ~/.cargo and Go fills the module cache under the user's home.
+    // Either would be changing the machine rather than the project.
+    for (const { adapter, id } of cases) {
+      const plan = adapter.planCommand(
+        {
+          adapterId: id,
+          kind: "install_project_dependencies",
+          workDir: ".",
+          frozen: true,
+          timeoutMs: 1000,
+        } as never,
+        { managedDir: "/work/app/.iwomc" } as never,
+      );
+      const values = Object.values(plan?.env ?? {});
+      expect(
+        values.filter((value) => value.startsWith("/work/app/.iwomc")).length,
+        `${id} must redirect its cache into the project`,
+      ).toBeGreaterThan(0);
+      expect(
+        values.some((v) => v.includes("~") || v.startsWith("/home") || v.startsWith("/Users")),
+        `${id} must not reach outside the project`,
+      ).toBe(false);
+    }
+  });
+
+  it("fetches exactly what the lockfile pins", () => {
+    const plan = (adapter: (typeof cases)[number]["adapter"], id: string, frozen: boolean) =>
+      adapter
+        .planCommand(
+          { adapterId: id, kind: "install_project_dependencies", workDir: ".", frozen, timeoutMs: 1000 } as never,
+          { managedDir: "/m" } as never,
+        )
+        ?.argv.join(" ");
+    // --locked refuses to update Cargo.lock, which is the whole point: a
+    // rescue reproduces a version, it never resolves a new one.
+    expect(plan(cargoAdapter, "rust.cargo", true)).toBe("cargo fetch --locked");
+    expect(plan(cargoAdapter, "rust.cargo", false)).toBe("cargo fetch");
+    expect(plan(goAdapter, "go.modules", true)).toBe("go mod download");
+  });
+
+  it("reads the dependencies and language version out of Cargo.toml", async () => {
+    const declared = await cargoAdapter.readDeclaredState(
+      ctx(["Cargo.toml"], {
+        "Cargo.toml": [
+          "[package]",
+          'name = "app"',
+          'rust-version = "1.74"',
+          "",
+          "[dependencies]",
+          'serde = "1.0.203"',
+          'tokio = { version = "1.38", features = ["full"] }',
+          "",
+          "[dev-dependencies]",
+          'criterion = "0.5"',
+        ].join("\n"),
+      }),
+    );
+    const found = Object.fromEntries(declared.packages.map((p) => [p.name, p.versionSpec]));
+    expect(found["serde"]).toBe("1.0.203");
+    // The table form carries the version in a field rather than inline.
+    expect(found["tokio"]).toBe("1.38");
+    expect(found["criterion"]).toBe("0.5");
+    expect(declared.runtimes.map((r) => r.versionSpec)).toContain("1.74");
+  });
+
+  it("reads a go.mod in both the block and the single-line form", async () => {
+    const declared = await goAdapter.readDeclaredState(
+      ctx(["go.mod"], {
+        "go.mod": [
+          "module example.com/app",
+          "",
+          "go 1.22",
+          "",
+          "require (",
+          "\tgithub.com/spf13/cobra v1.8.0",
+          "\tgolang.org/x/sync v0.7.0 // indirect",
+          ")",
+          "",
+          "require github.com/stretchr/testify v1.9.0",
+        ].join("\n"),
+      }),
+    );
+    const found = Object.fromEntries(declared.packages.map((p) => [p.name, p.versionSpec]));
+    expect(found["github.com/spf13/cobra"]).toBe("v1.8.0");
+    // The trailing `// indirect` comment must not become part of the version.
+    expect(found["golang.org/x/sync"]).toBe("v0.7.0");
+    expect(found["github.com/stretchr/testify"]).toBe("v1.9.0");
+    expect(declared.runtimes.map((r) => r.versionSpec)).toContain("1.22");
+  });
+
+  it("says plainly that it cannot list what is installed", async () => {
+    // Neither language keeps dependencies in a readable project folder, so
+    // reporting a clean inventory would be reporting a check that never ran.
+    for (const { adapter, id } of cases) {
+      const result = await adapter.inventory(ctx([], {}));
+      expect(result.available, id).toBe(false);
+      expect(result.gaps.length, id).toBeGreaterThan(0);
+      expect(adapter.manifest.capabilities.inventory, id).toBe(false);
+      expect(adapter.manifest.supportNote, id).toContain("cannot inventory");
+    }
+  });
+
+  it("verifies against the cache the rescue filled, not the machine's", async () => {
+    // Probing without the redirected cache would read an empty ~/.cargo and
+    // fail a rescue that actually worked.
+    const seen: { argv: readonly string[]; env: Record<string, string> }[] = [];
+    for (const { adapter, id } of cases) {
+      const verification = await adapter.verifyAfterMaterialize({
+        projectDir: "/work/app",
+        managedDir: "/work/app/.iwomc",
+        files: files([], {}),
+        async probe(argv: readonly string[], options?: { env?: Record<string, string> }) {
+          seen.push({ argv, env: options?.env ?? {} });
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+        },
+      } as never);
+      expect(verification.satisfied, id).toBe(true);
+    }
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.argv).toContain("--locked");
+    for (const call of seen) {
+      expect(Object.values(call.env).some((v) => v.startsWith("/work/app/.iwomc"))).toBe(true);
+    }
+  });
+
+  it("refuses to claim a rescue worked when the graph does not resolve", async () => {
+    const verification = await cargoAdapter.verifyAfterMaterialize({
+      projectDir: "/work/app",
+      managedDir: "/work/app/.iwomc",
+      files: files([], {}),
+      async probe() {
+        return {
+          ok: false,
+          exitCode: 101,
+          stdout: "",
+          stderr: "error: the lock file needs to be updated",
+          timedOut: false,
+          notFound: false,
+        };
+      },
+    } as never);
+    expect(verification.satisfied).toBe(false);
+    expect(verification.checks[0]?.detail).toContain("lock file needs to be updated");
   });
 });

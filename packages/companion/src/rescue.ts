@@ -45,6 +45,13 @@ export interface RescueInput {
   readonly store: CompanionStore;
   readonly contract: EnvironmentContractV1;
   readonly contractOrigin: "local" | "team";
+  /**
+   * True when the person named this contract by id rather than letting IWOMC
+   * choose one. That is the gesture `remote_mismatch` tells them to make, and
+   * it is the only thing that permits applying a contract captured against a
+   * different Git remote - and then only at the identical commit.
+   */
+  readonly contractNamedExplicitly?: boolean;
   readonly memory?: MemoryPort;
   readonly approved: boolean;
   readonly onEvent?: (event: RescueEvent) => void;
@@ -283,6 +290,7 @@ export async function rescue(input: RescueInput): Promise<RescueResult> {
       probe(argv, {
         cwd: options?.cwd ?? input.project.projectDir,
         timeoutMs: options?.timeoutMs ?? 30_000,
+        ...(options?.env ? { env: options.env } : {}),
       }),
     managedDir: MANAGED_DIR,
     availableSecretNames: presentSecretNames(input.contract),
@@ -390,15 +398,47 @@ async function preflight(
 ): Promise<Blocker | null> {
   const { contract, project } = input;
 
+  // A contract is bound to the project it was captured for, and a different
+  // Git remote means a different project. Two checkouts of the same code can
+  // still have different remotes - a fork, or a clone taken from a path - and
+  // the `remote_mismatch` blocker tells people to apply such a contract by
+  // naming its id. That advice has to actually work, so naming the id waives
+  // the project binding. Nothing else is waived: the commit must be identical,
+  // so the code is the same code, and the signature is still checked in full.
+  const sameRevision = contract.source.commit === project.git.commit;
+  const crossProject = contract.projectId !== project.binding.projectId;
+  const consentedToCrossProject = input.contractNamedExplicitly === true && sameRevision;
+
   // Signature and integrity, before anything is touched.
   try {
     verifyContractIntegrity(contract, {
-      expectedProjectId: project.binding.projectId,
+      ...(consentedToCrossProject ? {} : { expectedProjectId: project.binding.projectId }),
       ...(input.contractOrigin === "local"
         ? { trustedDeviceKeys: [input.device.publicKey] }
         : {}),
     });
     emit({ kind: "preflight_check", message: "Contract signature verified." });
+    if (consentedToCrossProject && crossProject) {
+      // Applying another project's contract is worth a line in the log and a
+      // line on the screen, every time. It is permitted, not unremarkable.
+      emit({
+        kind: "preflight_check",
+        message: `This contract was captured against a different Git remote. Applying it because you named it by id, and because it is for this exact commit (${contract.source.commit.slice(0, 12)}).`,
+      });
+      input.store.appendAudit({
+        id: randomUUID(),
+        workspaceId: project.binding.workspaceId,
+        at: new Date().toISOString(),
+        actor: input.device.personId,
+        action: "security.contract_applied_across_projects",
+        subject: `contract:${contract.id}`,
+        detail: {
+          contractProjectId: contract.projectId,
+          checkoutProjectId: project.binding.projectId,
+          commit: contract.source.commit,
+        },
+      });
+    }
   } catch (error) {
     if (error instanceof ContractIntegrityError) {
       const code =
@@ -443,8 +483,12 @@ async function preflight(
     );
   }
 
-  // Same repository.
-  if (contract.source.canonicalRemoteDigest !== project.git.canonicalRemoteDigest) {
+  // Same repository, unless the person named this contract for this exact
+  // commit, which is the documented way to say "yes, apply it anyway".
+  if (
+    !consentedToCrossProject &&
+    contract.source.canonicalRemoteDigest !== project.git.canonicalRemoteDigest
+  ) {
     return blocker(
       "remote_mismatch",
       "This checkout's Git remote does not match the one the contract was captured from.",
@@ -580,7 +624,11 @@ async function preflight(
     files: project.files,
     platform: project.platform,
     probe: (argv, options) =>
-      probe(argv, { cwd: options?.cwd ?? project.projectDir, timeoutMs: options?.timeoutMs ?? 30_000 }),
+      probe(argv, {
+        cwd: options?.cwd ?? project.projectDir,
+        timeoutMs: options?.timeoutMs ?? 30_000,
+        ...(options?.env ? { env: options.env } : {}),
+      }),
     managedDir: MANAGED_DIR,
     availableSecretNames: presentSecretNames(contract),
   };

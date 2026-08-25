@@ -285,7 +285,7 @@ export async function run(argv: readonly string[], options: RunOptions): Promise
 /** A probe: short, read-only, and inherits the caller's real environment. */
 export async function probe(
   argv: readonly string[],
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: Readonly<Record<string, string>> } = {},
 ): Promise<{
   ok: boolean;
   exitCode: number | null;
@@ -298,6 +298,7 @@ export async function probe(
     cwd: options.cwd ?? process.cwd(),
     timeoutMs: options.timeoutMs ?? 30_000,
     envAllowlist: null,
+    ...(options.env ? { env: options.env } : {}),
     maxOutputBytes: 64 * 1024,
   });
   return {

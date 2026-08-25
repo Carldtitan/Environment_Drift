@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateDeviceKeyPair, sealContract, signContract, type MaterializationStep } from "@iwomc/contracts";
 import { defaultRegistry } from "@iwomc/adapters";
 import { parseCommandLine, formatCommand, UnsafeCommandError } from "./command.js";
-import { resolveInsideManagedDir, resolveInsideProject, iwomcHome, MANAGED_DIR } from "./paths.js";
+import {
+  resolveInsideManagedDir,
+  resolveInsideProject,
+  iwomcHome,
+  MANAGED_DIR,
+  excludeManagedDirLocally,
+} from "./paths.js";
 import { canonicalizeRemote, remoteDigest, subdirectoryOf } from "./git.js";
 import { buildEnvironment, run } from "./exec.js";
 import { buildCmdCommandLine, planSpawn, quoteForCommandLine, UnsafeBatchArgumentError } from "./windows-shim.js";
@@ -560,5 +566,67 @@ describe("proof execution", () => {
     const result = await runProof({ proof, projectDir: dir, assurance: "locally_checked" });
     expect(result.passed).toBe(false);
     expect(result.blocker?.code).toBe("policy_denied");
+  });
+});
+
+describe("keeping IWOMC's own directory out of the way", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "iwomc-exclude-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("excludes .iwomc locally rather than editing a tracked .gitignore", async () => {
+    // .iwomc holds this project's package caches, so on a Rust or Go project
+    // it is large. It must not turn up as untracked noise, and IWOMC must not
+    // change a file the repository tracks in order to hide it.
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await writeFile(join(dir, ".gitignore"), "node_modules/\n", "utf8");
+
+    expect(await excludeManagedDirLocally(dir)).toBe(true);
+
+    const exclude = await readFile(join(dir, ".git", "info", "exclude"), "utf8");
+    expect(exclude).toContain(`/${MANAGED_DIR}/`);
+    // The tracked file is exactly as the person left it.
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n");
+  });
+
+  it("does not write the same line twice", async () => {
+    await mkdir(join(dir, ".git"), { recursive: true });
+    expect(await excludeManagedDirLocally(dir)).toBe(true);
+    expect(await excludeManagedDirLocally(dir)).toBe(false);
+    const exclude = await readFile(join(dir, ".git", "info", "exclude"), "utf8");
+    expect(exclude.split(`/${MANAGED_DIR}/`).length - 1).toBe(1);
+  });
+
+  it("respects a line the person already wrote", async () => {
+    await mkdir(join(dir, ".git", "info"), { recursive: true });
+    await writeFile(join(dir, ".git", "info", "exclude"), `${MANAGED_DIR}/\n`, "utf8");
+    expect(await excludeManagedDirLocally(dir)).toBe(false);
+  });
+
+  it("keeps whatever was already in the exclude file", async () => {
+    await mkdir(join(dir, ".git", "info"), { recursive: true });
+    // No trailing newline: appending carelessly would corrupt the last entry.
+    await writeFile(join(dir, ".git", "info", "exclude"), "*.log", "utf8");
+    expect(await excludeManagedDirLocally(dir)).toBe(true);
+    const lines = (await readFile(join(dir, ".git", "info", "exclude"), "utf8"))
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    expect(lines).toContain("*.log");
+    expect(lines).toContain(`/${MANAGED_DIR}/`);
+  });
+
+  it("does nothing outside a git repository, and does not fail", async () => {
+    // A worktree or submodule has a .git file rather than a directory. Guessing
+    // at the real git directory would mean writing outside this folder.
+    expect(await excludeManagedDirLocally(dir)).toBe(false);
+    await writeFile(join(dir, ".git"), "gitdir: ../elsewhere/.git\n", "utf8");
+    expect(await excludeManagedDirLocally(dir)).toBe(false);
   });
 });

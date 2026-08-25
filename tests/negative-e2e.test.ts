@@ -86,6 +86,47 @@ describe("a checkout that does not match the contract", () => {
     }
   }, 900_000);
 
+  it("applies a contract from a different remote only when you name it, at the same commit", async () => {
+    // A fork, or a checkout cloned from a path, is the same code under a
+    // different remote. IWOMC calls that a different project and refuses -
+    // and then tells you to run `rescue --contract <id>` to apply it anyway.
+    // That advice has to work, or it is worse than no advice.
+    const fork = await project.clone();
+    try {
+      // Same commit, different remote. This is what a fork looks like.
+      await run(["git", "remote", "set-url", "origin", `${project.originDir}-fork`], {
+        cwd: fork,
+        timeoutMs: 60_000,
+        envAllowlist: null,
+      });
+      await runIwomc(["init", "--proof", "npm run proof", "--json"], { cwd: fork, env: sandbox.env });
+
+      // Left to choose for itself, IWOMC does not reach across projects.
+      const refused = await runIwomc(["rescue", "--json", "--approve"], { cwd: fork, env: sandbox.env });
+      expect(refused.exitCode).toBe(EXIT.blocked);
+      const blocker = refused.json<RescueJson>().blocker;
+      expect(blocker.code).toBe("remote_mismatch");
+
+      // And the id it names in that advice is the one that works.
+      const offered = (blocker as { detail?: { otherContractId?: string } }).detail?.otherContractId;
+      expect(offered, "the blocker must name the contract it is talking about").toBeTruthy();
+
+      const applied = await runIwomc(
+        ["rescue", "--json", "--approve", "--contract", offered as string],
+        { cwd: fork, env: sandbox.env },
+      );
+      expect(applied.exitCode, "the advice IWOMC gives must actually work").toBe(EXIT.ok);
+      const payload = applied.json<RescueJson & { events?: { message: string }[] }>();
+      expect(payload.state).toBe("working");
+      // Permitted, but never quietly: it says so on the way past.
+      expect(
+        (payload.events ?? []).some((event) => event.message.includes("different Git remote")),
+      ).toBe(true);
+    } finally {
+      await rm(fork, { recursive: true, force: true });
+    }
+  }, 900_000);
+
   it("refuses a contract whose signature no longer verifies", async () => {
     const status = await runIwomc(["status", "--json"], { cwd: project.dir, env: sandbox.env });
     const contractId = status.json<{ contracts: { id: string }[] }>().contracts[0]?.id as string;

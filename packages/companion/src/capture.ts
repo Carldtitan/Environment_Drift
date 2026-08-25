@@ -106,7 +106,11 @@ export async function captureEnvironment(input: CaptureInput): Promise<CaptureRe
     files: project.files,
     platform: project.platform,
     probe: (argv, options) =>
-      probe(argv, { cwd: options?.cwd ?? project.projectDir, timeoutMs: options?.timeoutMs ?? 30_000 }),
+      probe(argv, {
+        cwd: options?.cwd ?? project.projectDir,
+        timeoutMs: options?.timeoutMs ?? 30_000,
+        ...(options?.env ? { env: options.env } : {}),
+      }),
   };
 
   // 1. Secrets: names from env files, values only to seed the redactor.

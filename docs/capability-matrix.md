@@ -15,8 +15,8 @@ what this build can actually do for each one.
 | python | uv | **native** - IWOMC compiles, materializes, and verifies this itself | `uv.lock` | Full loop: locked sync into a project-local .venv, then verification. |
 | python | poetry | **native** - IWOMC compiles, materializes, and verifies this itself | `poetry.lock` | Recognised from poetry.lock. Rescue needs a reviewed `poetry install` recipe. |
 | python | conda | **observe only** - recorded, never changed by IWOMC | `environment.yml`, `environment.yaml` | Conda environments live outside the project directory; IWOMC records the requirement but will not create one. |
-| rust | cargo | **recipe** - recognised; rescue needs a reviewed setup command | `Cargo.toml`, `Cargo.lock` | Recognised from Cargo.toml. Rescue needs a reviewed `cargo fetch`/`cargo build` recipe. |
-| go | go | **recipe** - recognised; rescue needs a reviewed setup command | `go.mod`, `go.sum` | Recognised from go.mod. Rescue needs a reviewed `go mod download` recipe. |
+| rust | cargo | **native** - IWOMC compiles, materializes, and verifies this itself | `Cargo.toml`, `Cargo.lock` | Recognised from Cargo.toml. Rescue needs a reviewed `cargo fetch`/`cargo build` recipe. |
+| go | go | **native** - IWOMC compiles, materializes, and verifies this itself | `go.mod`, `go.sum` | Recognised from go.mod. Rescue needs a reviewed `go mod download` recipe. |
 | jvm | maven | **recipe** - recognised; rescue needs a reviewed setup command | `pom.xml` | Recognised from pom.xml. Rescue needs a reviewed Maven recipe. |
 | jvm | gradle | **recipe** - recognised; rescue needs a reviewed setup command | `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts` | Recognised from the Gradle build files. Rescue needs a reviewed Gradle recipe. |
 | dotnet | nuget | **recipe** - recognised; rescue needs a reviewed setup command | `packages.config`, `nuget.config`, `Directory.Packages.props` | Recognised from NuGet configuration. Rescue needs a reviewed `dotnet restore` recipe. |
@@ -47,6 +47,8 @@ what this build can actually do for each one.
 | `node.pnpm` | yes | yes | yes | yes | yes | yes | yes |
 | `node.yarn` | yes | yes | yes | yes | yes | yes | yes |
 | `node.bun` | yes | yes | yes | yes | yes | yes | yes |
+| `rust.cargo` | yes | yes | no | yes | yes | yes | yes |
+| `go.modules` | yes | yes | no | yes | yes | yes | yes |
 | `generic.recipe` | yes | no | no | yes | yes | no | yes |
 
 ## Why some managers are deliberately observe-only

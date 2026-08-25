@@ -131,7 +131,11 @@ export class LocalFreshDirectoryVerifier implements VerifierPort {
         files,
         platform: request.platform,
         probe: (argv, options) =>
-          probe(argv, { cwd: options?.cwd ?? projectDir, timeoutMs: options?.timeoutMs ?? 30_000 }),
+          probe(argv, {
+            cwd: options?.cwd ?? projectDir,
+            timeoutMs: options?.timeoutMs ?? 30_000,
+            ...(options?.env ? { env: options.env } : {}),
+          }),
         managedDir: MANAGED_DIR,
         availableSecretNames: [],
       };

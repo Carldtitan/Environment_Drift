@@ -5,5 +5,6 @@ export * from "./diff.js";
 export * from "./npm.js";
 export * from "./python.js";
 export * from "./node-alt.js";
+export * from "./rust-go.js";
 export * from "./generic.js";
 export * from "./registry.js";

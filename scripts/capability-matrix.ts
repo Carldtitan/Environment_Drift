@@ -18,6 +18,8 @@ const check = process.argv.includes("--check");
 const registry = defaultRegistry();
 const problems: string[] = [];
 
+const NATIVE_REQUIRED = ["detect", "readDeclaredState", "compile", "materialize", "verify"] as const;
+
 for (const probe of ECOSYSTEM_PROBES) {
   if (probe.support !== "native") continue;
   const adapter = registry.byId(probe.id);
@@ -26,8 +28,19 @@ for (const probe of ECOSYSTEM_PROBES) {
     continue;
   }
   const capabilities = adapter.manifest.capabilities;
-  for (const [name, present] of Object.entries(capabilities)) {
-    if (!present) problems.push(`${probe.id} claims native support but does not implement ${name}`);
+  // What "native" claims, and only that: IWOMC reads the project, compiles a
+  // contract, materializes it, and verifies the result. Taking an inventory of
+  // what is installed is a separate ability that some managers simply do not
+  // permit - Cargo and Go keep nothing readable in the project folder - so it
+  // is disclosed in the table below rather than required here. An adapter that
+  // cannot inventory must still say so, which is checked next.
+  for (const name of NATIVE_REQUIRED) {
+    if (!capabilities[name]) problems.push(`${probe.id} claims native support but does not implement ${name}`);
+  }
+  if (!capabilities.inventory && !adapter.manifest.supportNote.includes("cannot inventory")) {
+    problems.push(
+      `${probe.id} cannot inventory installed packages but its supportNote does not say so. Say "It cannot inventory" and why.`,
+    );
   }
   if (!adapter.manifest.conformanceTested) {
     problems.push(`${probe.id} claims native support but has no conformance test`);

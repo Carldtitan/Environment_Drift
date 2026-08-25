@@ -1,3 +1,4 @@
+import { excludeManagedDirLocally } from "./paths.js";
 import { randomUUID } from "node:crypto";
 import {
   BlockedError,
@@ -361,7 +362,13 @@ export class Companion {
   async init(
     dir: string,
     options: { projectName?: string; proofCommand?: string; proofTimeoutMs?: number; envAllowlist?: readonly string[] } = {},
-  ): Promise<{ binding: ProjectBinding; proof: ProofCommand | null; support: { level: SupportLevel; reason: string } }> {
+  ): Promise<{
+    binding: ProjectBinding;
+    proof: ProofCommand | null;
+    support: { level: SupportLevel; reason: string };
+    /** True when `.iwomc` was newly added to this checkout's local git excludes. */
+    excludedManagedDir: boolean;
+  }> {
     const project = await bindProject(this.store, dir, currentPlatform(), {
       workspaceId: this.device.workspaceId,
       ...(options.projectName ? { projectName: options.projectName } : {}),
@@ -380,6 +387,10 @@ export class Companion {
       this.store.saveProof(project.binding.projectId, proof, this.#now());
     }
 
+    // IWOMC's own directory holds this project's package caches. Excluding it
+    // locally keeps it out of `git status` without editing a tracked file.
+    const excluded = await excludeManagedDirLocally(project.binding.checkoutPath);
+
     const support = await this.registry.supportLevelFor(project.files);
     this.store.appendAudit({
       id: randomUUID(),
@@ -395,7 +406,12 @@ export class Companion {
       },
     });
 
-    return { binding: project.binding, proof, support: { level: support.support, reason: support.reason } };
+    return {
+      binding: project.binding,
+      proof,
+      support: { level: support.support, reason: support.reason },
+      excludedManagedDir: excluded,
+    };
   }
 
   async setProofCommand(
@@ -787,6 +803,7 @@ export class Companion {
       store: this.store,
       contract: stored.contract,
       contractOrigin: stored.origin,
+      contractNamedExplicitly: Boolean(options.contractId),
       ...(this.#memory ? { memory: this.#memory } : {}),
       approved: options.approve ?? false,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),

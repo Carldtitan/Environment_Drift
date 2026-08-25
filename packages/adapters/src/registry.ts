@@ -4,6 +4,7 @@ import { npmAdapter } from "./npm.js";
 import { pipAdapter, uvAdapter, poetryAdapter } from "./python.js";
 import { genericAdapter } from "./generic.js";
 import { nodeAltAdapters } from "./node-alt.js";
+import { rustGoAdapters } from "./rust-go.js";
 
 /**
  * Ecosystem recognition table (R11.3).
@@ -104,7 +105,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "rust",
     manager: "cargo",
     files: ["Cargo.toml", "Cargo.lock"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from Cargo.toml. Rescue needs a reviewed `cargo fetch`/`cargo build` recipe.",
   },
   {
@@ -112,7 +113,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "go",
     manager: "go",
     files: ["go.mod", "go.sum"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from go.mod. Rescue needs a reviewed `go mod download` recipe.",
   },
   {
@@ -374,5 +375,5 @@ export class AdapterRegistry {
 }
 
 export function defaultRegistry(): AdapterRegistry {
-  return new AdapterRegistry([npmAdapter, uvAdapter, poetryAdapter, pipAdapter, ...nodeAltAdapters, genericAdapter]);
+  return new AdapterRegistry([npmAdapter, uvAdapter, poetryAdapter, pipAdapter, ...nodeAltAdapters, ...rustGoAdapters, genericAdapter]);
 }
