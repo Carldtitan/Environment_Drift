@@ -9,7 +9,7 @@ import {
   exactPins,
 } from "./python.js";
 import { genericAdapter, buildReviewedRecipeStep } from "./generic.js";
-import { nodeObserverAdapter } from "./node-observer.js";
+import { pnpmAdapter, yarnAdapter, bunAdapter } from "./node-alt.js";
 import { parseToml, tomlString, tomlStringArray } from "./toml.js";
 import { satisfies, parseVersion, compareVersions } from "./semver.js";
 import { unifiedDiff } from "./diff.js";
@@ -417,7 +417,7 @@ describe("noticing a version the repository would not install", () => {
   });
 });
 
-describe("watching a Node project npm does not own", () => {
+describe("pnpm, Yarn, and Bun", () => {
   const files = (present: string[]): ProjectFiles => ({
     entries: present,
     async read() {
@@ -428,47 +428,91 @@ describe("watching a Node project npm does not own", () => {
     },
   });
 
-  it("claims a pnpm, Yarn, or Bun project", async () => {
-    for (const lockfile of ["pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"]) {
-      const detection = await nodeObserverAdapter.detect(files(["package.json", lockfile]));
-      expect(detection.detected, lockfile).toBe(true);
+  const cases = [
+    { adapter: pnpmAdapter, manager: "pnpm", lockfile: "pnpm-lock.yaml" },
+    { adapter: yarnAdapter, manager: "yarn", lockfile: "yarn.lock" },
+    { adapter: bunAdapter, manager: "bun", lockfile: "bun.lockb" },
+  ] as const;
+
+  it("each adapter claims only its own project", async () => {
+    for (const { adapter, manager, lockfile } of cases) {
+      expect((await adapter.detect(files(["package.json", lockfile]))).detected, manager).toBe(true);
+      // And not another manager's.
+      for (const other of cases) {
+        if (other.manager === manager) continue;
+        expect(
+          (await adapter.detect(files(["package.json", other.lockfile]))).detected,
+          `${manager} must not claim a ${other.manager} project`,
+        ).toBe(false);
+      }
     }
   });
 
   it("stands aside when npm owns the project", async () => {
-    // Both adapters inventorying the same node_modules would put every
-    // install in the log twice.
+    // Two adapters installing the same node_modules would fight over it.
     for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
-      const detection = await nodeObserverAdapter.detect(
-        files(["package.json", "pnpm-lock.yaml", lockfile]),
-      );
+      const detection = await pnpmAdapter.detect(files(["package.json", "pnpm-lock.yaml", lockfile]));
       expect(detection.detected, lockfile).toBe(false);
       expect(detection.note).toContain("npm adapter owns this project");
     }
   });
 
-  it("ignores a directory that is not a Node project at all", async () => {
-    expect((await nodeObserverAdapter.detect(files(["Cargo.toml"]))).detected).toBe(false);
-    // A package.json with no lockfile is npm's business, not this adapter's.
-    expect((await nodeObserverAdapter.detect(files(["package.json"]))).detected).toBe(false);
+  it("ignores a directory that is not a Node project", async () => {
+    expect((await pnpmAdapter.detect(files(["Cargo.toml"]))).detected).toBe(false);
+    expect((await pnpmAdapter.detect(files(["package.json"]))).detected).toBe(false);
   });
 
-  it("can read what is installed but never install anything", () => {
-    const caps = nodeObserverAdapter.manifest.capabilities;
-    expect(caps.inventory).toBe(true);
-    expect(caps.detect).toBe(true);
-    // The honesty that matters: it must not be able to act on a project it
-    // cannot correctly repair.
-    expect(caps.materialize).toBe(false);
-    expect(caps.compile).toBe(false);
-    expect(caps.verify).toBe(false);
-    expect(nodeObserverAdapter.manifest.support).not.toBe("native");
-    expect(nodeObserverAdapter.planCommand()).toBeNull();
+  it("can install, and says so honestly", () => {
+    for (const { adapter, manager } of cases) {
+      expect(adapter.manifest.capabilities.materialize, manager).toBe(true);
+      expect(adapter.manifest.capabilities.verify, manager).toBe(true);
+      expect(adapter.manifest.support, manager).toBe("native");
+      expect(adapter.manifest.id, manager).toBe(`node.${manager}`);
+    }
   });
 
-  it("says it cannot repair the project rather than trying", () => {
-    const result = nodeObserverAdapter.compile({} as never);
-    expect(result.support).toBe("observe_only");
-    expect("reason" in result && result.reason).toContain("does not run until it has been taught");
+  const planFor = (adapter: (typeof cases)[number]["adapter"], manager: string, frozen: boolean, entries: string[] = []) =>
+    adapter.planCommand(
+      {
+        adapterId: `node.${manager}`,
+        kind: "install_project_dependencies",
+        manager,
+        workDir: ".",
+        frozen,
+        timeoutMs: 1000,
+      } as never,
+      { managedDir: "/work/app/.iwomc", files: { entries } } as never,
+    );
+
+  it("keeps every manager's cache inside the project", () => {
+    // These all keep a machine-wide cache by default. Filling it would be
+    // changing the machine, which is the one thing IWOMC promises not to do.
+    for (const { adapter, manager } of cases) {
+      const values = Object.values(planFor(adapter, manager, true)?.env ?? {});
+      expect(
+        values.filter((value) => value.startsWith("/work/app/.iwomc")).length,
+        `${manager} must redirect its cache into the project`,
+      ).toBeGreaterThan(0);
+      expect(
+        values.some((v) => v.includes("~") || v.startsWith("/home") || v.startsWith("/Users")),
+        `${manager} must not reach outside the project`,
+      ).toBe(false);
+    }
+  });
+
+  it("installs exactly the lockfile when one is committed", () => {
+    expect(planFor(pnpmAdapter, "pnpm", true)?.argv.join(" ")).toBe("pnpm install --frozen-lockfile");
+    expect(planFor(yarnAdapter, "yarn", true)?.argv.join(" ")).toBe("yarn install --frozen-lockfile");
+    expect(planFor(bunAdapter, "bun", true)?.argv.join(" ")).toBe("bun install --frozen-lockfile");
+    // Without a lockfile there is nothing to freeze.
+    expect(planFor(pnpmAdapter, "pnpm", false)?.argv.join(" ")).toBe("pnpm install --no-frozen-lockfile");
+  });
+
+  it("uses Yarn Berry's flag when the project is Berry", () => {
+    // Berry rejects --frozen-lockfile outright; --immutable is its equivalent,
+    // and .yarnrc.yml is how Yarn itself tells the two apart.
+    expect(planFor(yarnAdapter, "yarn", true, [".yarnrc.yml"])?.argv.join(" ")).toBe(
+      "yarn install --immutable",
+    );
   });
 });

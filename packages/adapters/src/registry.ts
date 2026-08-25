@@ -3,7 +3,7 @@ import type { EnvironmentAdapter, ProjectFiles } from "./types.js";
 import { npmAdapter } from "./npm.js";
 import { pipAdapter, uvAdapter } from "./python.js";
 import { genericAdapter } from "./generic.js";
-import { nodeObserverAdapter } from "./node-observer.js";
+import { nodeAltAdapters } from "./node-alt.js";
 
 /**
  * Ecosystem recognition table (R11.3).
@@ -46,7 +46,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "node",
     manager: "pnpm",
     files: ["pnpm-lock.yaml", "pnpm-workspace.yaml"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from its lockfile. Rescue needs a reviewed `pnpm install --frozen-lockfile` recipe.",
   },
   {
@@ -54,7 +54,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "node",
     manager: "yarn",
     files: ["yarn.lock", ".yarnrc.yml"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from its lockfile. Rescue needs a reviewed `yarn install --immutable` recipe.",
   },
   {
@@ -62,7 +62,7 @@ export const ECOSYSTEM_PROBES: readonly EcosystemProbe[] = [
     ecosystem: "node",
     manager: "bun",
     files: ["bun.lockb", "bun.lock", "bunfig.toml"],
-    support: "recipe",
+    support: "native",
     note: "Recognised from its lockfile. Rescue needs a reviewed `bun install --frozen-lockfile` recipe.",
   },
   // Python
@@ -374,5 +374,5 @@ export class AdapterRegistry {
 }
 
 export function defaultRegistry(): AdapterRegistry {
-  return new AdapterRegistry([npmAdapter, uvAdapter, pipAdapter, nodeObserverAdapter, genericAdapter]);
+  return new AdapterRegistry([npmAdapter, uvAdapter, pipAdapter, ...nodeAltAdapters, genericAdapter]);
 }

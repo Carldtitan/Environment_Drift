@@ -8,9 +8,9 @@ what this build can actually do for each one.
 | Ecosystem | Manager | Support | Detected from | Note |
 | --- | --- | --- | --- | --- |
 | node | npm | **native** - IWOMC compiles, materializes, and verifies this itself | `package-lock.json`, `npm-shrinkwrap.json`, `package.json` | Full loop: declared state, inventory, project-local install, verification. |
-| node | pnpm | **recipe** - recognised; rescue needs a reviewed setup command | `pnpm-lock.yaml`, `pnpm-workspace.yaml` | Recognised from its lockfile. Rescue needs a reviewed `pnpm install --frozen-lockfile` recipe. |
-| node | yarn | **recipe** - recognised; rescue needs a reviewed setup command | `yarn.lock`, `.yarnrc.yml` | Recognised from its lockfile. Rescue needs a reviewed `yarn install --immutable` recipe. |
-| node | bun | **recipe** - recognised; rescue needs a reviewed setup command | `bun.lockb`, `bun.lock`, `bunfig.toml` | Recognised from its lockfile. Rescue needs a reviewed `bun install --frozen-lockfile` recipe. |
+| node | pnpm | **native** - IWOMC compiles, materializes, and verifies this itself | `pnpm-lock.yaml`, `pnpm-workspace.yaml` | Recognised from its lockfile. Rescue needs a reviewed `pnpm install --frozen-lockfile` recipe. |
+| node | yarn | **native** - IWOMC compiles, materializes, and verifies this itself | `yarn.lock`, `.yarnrc.yml` | Recognised from its lockfile. Rescue needs a reviewed `yarn install --immutable` recipe. |
+| node | bun | **native** - IWOMC compiles, materializes, and verifies this itself | `bun.lockb`, `bun.lock`, `bunfig.toml` | Recognised from its lockfile. Rescue needs a reviewed `bun install --frozen-lockfile` recipe. |
 | python | pip | **native** - IWOMC compiles, materializes, and verifies this itself | `requirements.txt`, `requirements-dev.txt`, `setup.py`, `setup.cfg` | Full loop: declared state, project-local .venv, install, verification. |
 | python | uv | **native** - IWOMC compiles, materializes, and verifies this itself | `uv.lock` | Full loop: locked sync into a project-local .venv, then verification. |
 | python | poetry | **recipe** - recognised; rescue needs a reviewed setup command | `poetry.lock` | Recognised from poetry.lock. Rescue needs a reviewed `poetry install` recipe. |
@@ -43,7 +43,9 @@ what this build can actually do for each one.
 | `node.npm` | yes | yes | yes | yes | yes | yes | yes |
 | `python.uv` | yes | yes | yes | yes | yes | yes | yes |
 | `python.pip` | yes | yes | yes | yes | yes | yes | yes |
-| `node.observer` | yes | no | yes | no | no | no | yes |
+| `node.pnpm` | yes | yes | yes | yes | yes | yes | yes |
+| `node.yarn` | yes | yes | yes | yes | yes | yes | yes |
+| `node.bun` | yes | yes | yes | yes | yes | yes | yes |
 | `generic.recipe` | yes | no | no | yes | yes | no | yes |
 
 ## Why some managers are deliberately observe-only

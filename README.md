@@ -121,17 +121,19 @@ checkout, and prove it with your own test command.
 
 | Ecosystem | Managers |
 | --- | --- |
-| Node.js | npm |
+| Node.js | npm, pnpm, Yarn, Bun |
 | Python | pip, uv |
 
-**Recorded** — the package log and timeline work: installs, upgrades,
-downgrades and removals are tracked against the commit you were on, so you can
-ask what your machine had at any point. Repair is not available, and IWOMC says
-so plainly instead of running a command it has not been taught.
+Every one of these installs **inside your project folder only**. Each keeps a
+machine-wide cache by default; IWOMC redirects it into the project's own
+`.iwomc` directory, so a rescue never changes anything outside the checkout it
+was pointed at.
 
-| Ecosystem | Managers |
-| --- | --- |
-| Node.js | pnpm, Yarn, Bun |
+One honest limit for pnpm and Yarn: they cannot install a package without
+editing `package.json`, and a rescue never edits a tracked file. So a package
+that is installed but undeclared is reported as drift for `iwomc promote` to
+turn into a reviewed change — which puts the fix in the repository rather than
+on one more machine.
 
 **Recognised** — detected and reported, so a contract never silently omits
 them: Poetry, Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub,
