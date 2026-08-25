@@ -113,19 +113,35 @@ machine, IWOMC names it and stops before running anything.
 
 ## What it supports
 
-Fully supported today — detects, records, repairs, and verifies:
+There are three levels, and IWOMC tells you which one applies to your project
+rather than letting you find out later.
+
+**Repaired and verified** — the full loop: detect, record, repair a broken
+checkout, and prove it with your own test command.
 
 | Ecosystem | Managers |
 | --- | --- |
 | Node.js | npm |
 | Python | pip, uv |
 
-IWOMC recognises 25 more: pnpm, Yarn, Bun, Poetry, Conda, Cargo, Go modules,
-Maven, Gradle, NuGet, Bundler, Composer, pub, Mix, vcpkg, Conan, Homebrew, apt,
-Chocolatey, winget, and the version managers asdf, mise, Volta, SDKMAN, and nvm.
-For those it records what it can see and says plainly that it cannot repair them
-yet — it does not claim support it doesn't have. Adding one means writing an
-adapter; see [docs/adapters.md](docs/adapters.md).
+**Recorded** — the package log and timeline work: installs, upgrades,
+downgrades and removals are tracked against the commit you were on, so you can
+ask what your machine had at any point. Repair is not available, and IWOMC says
+so plainly instead of running a command it has not been taught.
+
+| Ecosystem | Managers |
+| --- | --- |
+| Node.js | pnpm, Yarn, Bun |
+
+**Recognised** — detected and reported, so a contract never silently omits
+them: Poetry, Cargo, Go modules, Maven, Gradle, NuGet, Bundler, Composer, pub,
+Mix, Conda, vcpkg, Conan, Homebrew, apt, Chocolatey, winget, and the version
+managers asdf, mise, Volta, SDKMAN and nvm.
+
+`iwomc status` names the level for the project you are in, and
+[docs/capability-matrix.md](docs/capability-matrix.md) is generated from what
+each adapter actually declares — not from this list. Adding a manager means
+writing an adapter; see [docs/adapters.md](docs/adapters.md).
 
 ## For coding agents
 

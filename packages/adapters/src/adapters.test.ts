@@ -9,6 +9,7 @@ import {
   exactPins,
 } from "./python.js";
 import { genericAdapter, buildReviewedRecipeStep } from "./generic.js";
+import { nodeObserverAdapter } from "./node-observer.js";
 import { parseToml, tomlString, tomlStringArray } from "./toml.js";
 import { satisfies, parseVersion, compareVersions } from "./semver.js";
 import { unifiedDiff } from "./diff.js";
@@ -413,5 +414,61 @@ describe("noticing a version the repository would not install", () => {
         { name: "spaced", versionSpec: "== 3.4.5" },
       ]),
     ).toEqual({ pinned: "2.1.0", spaced: "3.4.5" });
+  });
+});
+
+describe("watching a Node project npm does not own", () => {
+  const files = (present: string[]): ProjectFiles => ({
+    entries: present,
+    async read() {
+      return null;
+    },
+    async exists(path: string) {
+      return present.includes(path);
+    },
+  });
+
+  it("claims a pnpm, Yarn, or Bun project", async () => {
+    for (const lockfile of ["pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"]) {
+      const detection = await nodeObserverAdapter.detect(files(["package.json", lockfile]));
+      expect(detection.detected, lockfile).toBe(true);
+    }
+  });
+
+  it("stands aside when npm owns the project", async () => {
+    // Both adapters inventorying the same node_modules would put every
+    // install in the log twice.
+    for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
+      const detection = await nodeObserverAdapter.detect(
+        files(["package.json", "pnpm-lock.yaml", lockfile]),
+      );
+      expect(detection.detected, lockfile).toBe(false);
+      expect(detection.note).toContain("npm adapter owns this project");
+    }
+  });
+
+  it("ignores a directory that is not a Node project at all", async () => {
+    expect((await nodeObserverAdapter.detect(files(["Cargo.toml"]))).detected).toBe(false);
+    // A package.json with no lockfile is npm's business, not this adapter's.
+    expect((await nodeObserverAdapter.detect(files(["package.json"]))).detected).toBe(false);
+  });
+
+  it("can read what is installed but never install anything", () => {
+    const caps = nodeObserverAdapter.manifest.capabilities;
+    expect(caps.inventory).toBe(true);
+    expect(caps.detect).toBe(true);
+    // The honesty that matters: it must not be able to act on a project it
+    // cannot correctly repair.
+    expect(caps.materialize).toBe(false);
+    expect(caps.compile).toBe(false);
+    expect(caps.verify).toBe(false);
+    expect(nodeObserverAdapter.manifest.support).not.toBe("native");
+    expect(nodeObserverAdapter.planCommand()).toBeNull();
+  });
+
+  it("says it cannot repair the project rather than trying", () => {
+    const result = nodeObserverAdapter.compile({} as never);
+    expect(result.support).toBe("observe_only");
+    expect("reason" in result && result.reason).toContain("does not run until it has been taught");
   });
 });

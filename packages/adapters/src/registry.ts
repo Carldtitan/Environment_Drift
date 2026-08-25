@@ -3,6 +3,7 @@ import type { EnvironmentAdapter, ProjectFiles } from "./types.js";
 import { npmAdapter } from "./npm.js";
 import { pipAdapter, uvAdapter } from "./python.js";
 import { genericAdapter } from "./generic.js";
+import { nodeObserverAdapter } from "./node-observer.js";
 
 /**
  * Ecosystem recognition table (R11.3).
@@ -373,5 +374,5 @@ export class AdapterRegistry {
 }
 
 export function defaultRegistry(): AdapterRegistry {
-  return new AdapterRegistry([npmAdapter, uvAdapter, pipAdapter, genericAdapter]);
+  return new AdapterRegistry([npmAdapter, uvAdapter, pipAdapter, nodeObserverAdapter, genericAdapter]);
 }

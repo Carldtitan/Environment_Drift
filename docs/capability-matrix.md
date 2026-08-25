@@ -43,6 +43,7 @@ what this build can actually do for each one.
 | `node.npm` | yes | yes | yes | yes | yes | yes | yes |
 | `python.uv` | yes | yes | yes | yes | yes | yes | yes |
 | `python.pip` | yes | yes | yes | yes | yes | yes | yes |
+| `node.observer` | yes | no | yes | no | no | no | yes |
 | `generic.recipe` | yes | no | no | yes | yes | no | yes |
 
 ## Why some managers are deliberately observe-only

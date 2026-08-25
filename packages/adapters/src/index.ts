@@ -4,5 +4,6 @@ export * from "./toml.js";
 export * from "./diff.js";
 export * from "./npm.js";
 export * from "./python.js";
+export * from "./node-observer.js";
 export * from "./generic.js";
 export * from "./registry.js";

@@ -184,7 +184,7 @@ function constraintFrom(parsed: { os?: unknown; cpu?: unknown }): PlatformConstr
 }
 
 /** Versions and platform restrictions from one pass over node_modules. */
-async function readInstalledDetail(
+export async function readInstalledDetail(
   projectDir: string,
 ): Promise<{ versions: Map<string, string>; constraints: Record<string, PlatformConstraint> } | null> {
   const root = join(projectDir, "node_modules");
